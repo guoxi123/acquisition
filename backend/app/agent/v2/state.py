@@ -27,7 +27,9 @@ class V2State(TypedDict):
     errors: list[str]
     user_id: str | None  # 配额按用户记账（chat / chat_stream 注入，output_result 用）
     # 配额前置检查 + 采集循环
-    remaining: int | None  # 本月剩余配额（check_quota 算，query_db LIMIT 用）
+    remaining: int | None  # 本月剩余配额（check_quota 算）
+    desired_count: int | None  # 用户想获取数量（"10个"→10）；None 则用剩余配额
+    target: int | None  # 本次目标数量 = min(desired_count, remaining)；LIMIT / 够量判断用
     quota_exhausted: bool  # 配额耗尽（check_quota 设，output_result 早分支用）
     fetch_round: int  # 采集轮次计数
     last_new_count: int  # 上一轮真正新增 seller 数（0→源耗尽，早停用）

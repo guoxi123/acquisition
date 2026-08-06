@@ -1,9 +1,7 @@
-"""V2 图节点：human_confirm(HITL) + check_quota(配额前置) + query_db(去重复用库存) +
-call_actors(库不够则采集一轮) + llm_analysis/score_sellers/lookup_contacts + output_result。"""
+"""V2 图节点：check_quota(配额前置) + query_db(去重复用库存) +
+call_actors(库不够则采集一轮) + llm_analysis/score_sellers/lookup_contacts + output_result（含 HITL/配额收尾）。"""
 
 import uuid
-
-from langgraph.types import interrupt
 
 from app.agent.v2.state import V2State
 from app.utils.logger import logger
@@ -67,42 +65,6 @@ async def update_progress(msg_id: str, step: str, message: str, status: str = "d
         logger.warning(f"[progress] 写入失败: {e}")
 
 
-async def human_confirm(state: V2State) -> dict:
-    """信息不全时 interrupt 请求用户补充（HITL）。resume 后合并补充信息。"""
-    msg_id = state.get("assistant_msg_id")
-
-    if not state.get("need_human_confirm"):
-        if msg_id:
-            await update_progress(msg_id, "human_confirm", "信息完整，进入下一步", "done")
-        return {"human_approved": True}
-
-    missing = state.get("missing") or ["目标市场", "产品品类"]
-    if msg_id:
-        await update_progress(msg_id, "human_confirm", f"等待用户补充：{', '.join(missing)}", "waiting")
-
-    response = interrupt(
-        {
-            "question": f"请补充：{', '.join(missing)}",
-            "current": {
-                "marketplace": state.get("marketplace"),
-                "category": state.get("category"),
-            },
-        }
-    )
-
-    if msg_id:
-        await update_progress(msg_id, "human_confirm", "用户已确认，继续执行", "done")
-
-    return {
-        "marketplace": (response.get("marketplace") if isinstance(response, dict) else None)
-        or state.get("marketplace"),
-        "category": (response.get("category") if isinstance(response, dict) else None)
-        or state.get("category"),
-        "need_human_confirm": False,
-        "human_approved": True,
-    }
-
-
 async def check_quota(state: V2State) -> dict:
     """配额前置检查：算本月剩余配额。=0（非超管）标 quota_exhausted，由条件边转到 output_result 提示升级。"""
     from sqlalchemy import select
@@ -155,17 +117,17 @@ async def query_db(state: V2State) -> dict:
     msg_id = state.get("assistant_msg_id")
     marketplace = state.get("marketplace")
     category = (state.get("category") or "").strip().lower()
-    remaining = state.get("remaining") or 0
+    target = state.get("target") or state.get("remaining") or 0  # 本次目标数量（用户指定或剩余配额）
     user_id = state.get("user_id")
     business_country = state.get("business_country")
     min_total_feedback = state.get("min_total_feedback")
     min_seller_score = state.get("min_seller_score")
 
-    
-    if msg_id:
-        await update_progress(msg_id, "query_db", f"查询库存（目标 {remaining}）…", "running")
 
-    if not marketplace or not category or remaining <= 0:
+    if msg_id:
+        await update_progress(msg_id, "query_db", f"查询库存（目标 {target}）…", "running")
+
+    if not marketplace or not category or target <= 0:
         if msg_id:
             await update_progress(msg_id, "query_db", "条件不足或无额度，0 个可复用", "done")
         return {"sellers": []}
@@ -189,7 +151,7 @@ async def query_db(state: V2State) -> dict:
                 )
             )
         )
-    q = q.order_by(Seller.total_feedback.desc().nullslast()).limit(remaining)
+    q = q.order_by(Seller.total_feedback.desc().nullslast()).limit(target)
 
     async with async_session() as db:
         sellers_db = list((await db.execute(q)).scalars().all())
@@ -210,9 +172,9 @@ async def query_db(state: V2State) -> dict:
         }
         for s in sellers_db
     ]
-    logger.info(f"[query_db] marketplace={marketplace} category={category} 复用 {len(sellers)}/{remaining}")
+    logger.info(f"[query_db] marketplace={marketplace} category={category} 复用 {len(sellers)}/{target}")
     if msg_id:
-        await update_progress(msg_id, "query_db", f"库存可复用 {len(sellers)} / 目标 {remaining}", "done")
+        await update_progress(msg_id, "query_db", f"库存可复用 {len(sellers)} / 目标 {target}", "done")
     return {"sellers": sellers}
 
 
@@ -391,22 +353,22 @@ async def call_actors(state: V2State) -> dict:
 async def acquire_if_needed(state: V2State) -> dict:
     """判断节点：评估库存是否够配额（够 / 达 max_rounds / 上一轮 0 新增）。
     路由由其后条件边决定：够 → llm_analysis，不够 → call_actors 子 agent。"""
-    remaining = state.get("remaining") or 0
+    target = state.get("target") or state.get("remaining") or 0
     sellers = state.get("sellers") or []
     fetch_round = state.get("fetch_round") or 0
     max_rounds = state.get("max_rounds") or 3
     last_new = state.get("last_new_count") or 0
     enough = (
-        len(sellers) >= remaining
+        len(sellers) >= target
         or fetch_round >= max_rounds
         or (fetch_round > 0 and last_new == 0)
     )
     msg_id = state.get("assistant_msg_id")
     if msg_id:
-        msg = "库存够，进入分析" if enough else f"库存不足（{len(sellers)}/{remaining}），触发采集"
+        msg = "库存够，进入分析" if enough else f"库存不足（{len(sellers)}/{target}），触发采集"
         await update_progress(msg_id, "acquire_if_needed", msg, "done")
     logger.info(
-        f"[acquire_if_needed] sellers={len(sellers)} remaining={remaining} "
+        f"[acquire_if_needed] sellers={len(sellers)} target={target} "
         f"round={fetch_round} last_new={last_new} enough={enough}"
     )
     return {}
@@ -538,6 +500,24 @@ async def output_result(state: V2State) -> dict:
     from app.models.query_log import QueryLog
 
     msg_id = state.get("assistant_msg_id")
+    # 信息不全（HITL）→ 写补充提示收尾，前端 SSE 看到 need_input 后重发补充 marketplace/category
+    if state.get("need_human_confirm"):
+        missing = state.get("missing") or ["目标市场", "产品品类"]
+        if msg_id:
+            await _write_msg(
+                msg_id,
+                content=f"请补充：{', '.join(missing)}",
+                meta_patch={
+                    "sellers": [],
+                    "done": True,
+                    "need_input": True,
+                    "missing": missing,
+                    "marketplace": state.get("marketplace"),
+                    "category": state.get("category"),
+                },
+            )
+            await update_progress(msg_id, "output_result", f"信息不全，等待补充：{', '.join(missing)}", "done")
+        return {"final_result": {"need_input": True, "missing": missing}}
     # 配额耗尽 → 只写收尾 meta，跳过 LLM/grant（让 SSE 正常收尾、前端显示升级提示）
     if state.get("quota_exhausted"):
         if msg_id:
@@ -583,9 +563,9 @@ async def output_result(state: V2State) -> dict:
     ]
 
     msg_id = state.get("assistant_msg_id")
-    # 库存 + 采集仍不足配额 → 标记源耗尽（前端提示「该品类已全部展示」）
-    remaining = state.get("remaining") or 0
-    if remaining and len(result) < remaining:
+    # 库存 + 采集仍不足目标数量 → 标记源耗尽（前端提示「该品类已全部展示」）
+    target = state.get("target") or state.get("remaining") or 0
+    if target and len(result) < target:
         quota_meta["source_exhausted"] = True
     if msg_id:
         await update_progress(msg_id, "output_result", f"正在生成最终分析，共 {len(result)} 个卖家…", "running")

@@ -25,6 +25,8 @@ COPYFILE_DISABLE=1 tar czf - \
   --exclude='*.pyc' \
   --exclude='.DS_Store' \
   --exclude='._*' \
+  --exclude='logs' \
+  --exclude='*.log' \
   . \
   | ssh -i ${SSH_KEY} "${SERVER_USER}@${SERVER_HOST}" "
     mkdir -p ${SERVER_PATH}

@@ -31,6 +31,8 @@ _cancelled: dict[str, bool] = {}
 class StreamRequest(BaseModel):
     query: str
     thread_id: str | None = None
+    marketplace: str | None = None  # HITL 补充重跑时注入，覆盖意图识别结果
+    category: str | None = None
 
 
 async def _run_stream_graph(
@@ -80,28 +82,7 @@ async def _run_stream_graph(
 async def chat_stream(
     req: StreamRequest, user: User = Depends(get_current_user)
 ) -> dict:
-    from app.agent.v2.intent import parse_intent
-
     logger.info(f"[chat/stream] user={user.username} query={req.query[:50]} thread_id={req.thread_id}")
-
-    # 先查配额：超配额直接返回（不意图识别），让前端提示升级
-    if not user.is_super_admin:
-        from app.quota import get_quota_summary
-        async with async_session() as db:
-            summary = await get_quota_summary(db, user)
-        if (summary.get("remaining") or 0) == 0:
-            logger.info(f"[chat/stream] 配额已用完: user={user.username}")
-            return {"status": "exhausted", "quota": summary}
-
-    parsed = await parse_intent({"user_query": req.query})
-    if parsed.get("need_human_confirm"):
-        logger.info(f"[chat/stream] HITL: missing={parsed.get('missing')}")
-        return {
-            "status": "need_input",
-            "missing": parsed.get("missing", []),
-            "marketplace": parsed.get("marketplace"),
-            "category": parsed.get("category"),
-        }
 
     if req.thread_id:
         async with async_session() as db:
@@ -117,22 +98,27 @@ async def chat_stream(
         thread_id = str(sid)
         session_uuid = uuid.UUID(thread_id)
 
-    await memory_agent.add_message_and_maybe_compress(
-        session_uuid, MessageRole.user, req.query
-    )
+    # 补充重跑（带 thread_id + marketplace/category）：原 query 已在上轮存过，不重复存用户消息；
+    # 否则记用户消息。assistant 占位消息始终新建（图往里写流式内容）。
+    is_resupply = bool(req.marketplace or req.category)
+    if not (req.thread_id and is_resupply):
+        await memory_agent.add_message_and_maybe_compress(
+            session_uuid, MessageRole.user, req.query
+        )
     assistant_msg_id = await memory_agent.storage.add_message(
         session_uuid, MessageRole.assistant, ""
     )
 
+    # 配额 / 意图 / HITL 全交给图（check_quota → parse_intent → …）；endpoint 只注入补充值
     state = {
         "user_query": req.query,
-        "marketplace": parsed.get("marketplace") or "amazon.com",
-        "category": parsed.get("category") or "",
-        "shipping_type": parsed.get("shipping_type"),
-        "service_mode": parsed.get("service_mode"),
-        "business_country": parsed.get("business_country"),
-        "min_total_feedback": parsed.get("min_total_feedback"),
-        "min_seller_score": parsed.get("min_seller_score"),
+        "marketplace": req.marketplace,
+        "category": req.category,
+        "shipping_type": None,
+        "service_mode": None,
+        "business_country": None,
+        "min_total_feedback": None,
+        "min_seller_score": None,
         "need_human_confirm": False,
         "missing": [],
         "human_approved": True,
@@ -255,6 +241,19 @@ async def stream_events(
                 last_progress_len = len(progress)
                 yield f"data: {json.dumps({'progress': progress}, ensure_ascii=False)}\n\n"
 
+            # done 未设且消息已超过 90s（task 多半已死/异常/reload）→ 主动收尾，避免前端永远等不到 done。
+            # 不查 _tasks：多 worker 下 _tasks 进程内不共享，会误判孤儿、抢在 output_result 写 need_input 前覆盖。
+            # 不写 cancelled：避免覆盖 HITL 的 need_input（让前端正常弹补充 UI）。
+            if not meta.get("done") and msg.created_at:
+                from datetime import datetime, timezone
+                from app.agent.v2.nodes import _write_msg
+                _created = msg.created_at
+                if _created.tzinfo is None:
+                    _created = _created.replace(tzinfo=timezone.utc)
+                if (datetime.now(timezone.utc) - _created).total_seconds() > 90:
+                    await _write_msg(str(msg.message_id), meta_patch={"done": True})
+                    continue  # 下一轮读到 done，正常走下面的收尾发送
+
             if meta.get("done"):
                 payload = {
                     "done": True,
@@ -267,6 +266,10 @@ async def stream_events(
                     "new_granted", "new_skipped", "exhausted",
                     "upgrade_available", "unlimited",
                 ):
+                    if k in meta:
+                        payload[k] = meta[k]
+                # 透传 HITL 补充请求（output_result 在 need_human_confirm 时写入）
+                for k in ("need_input", "missing", "marketplace", "category"):
                     if k in meta:
                         payload[k] = meta[k]
                 yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
