@@ -58,13 +58,39 @@ async def grant_sellers(
 
     cand_ids = [c["seller_id"] for c in candidates if c.get("seller_id")]
 
-    if user is None or user.is_super_admin:
+    if user is None:
+        # 未识别用户（兼容降级）：不计账
         return cand_ids, {"unlimited": True}
 
+    # 永久去重集合（超管/普通都查）：决定哪些是本次新卖家
+    already = set(
+        (
+            await db.execute(
+                select(UserAcquiredSeller.seller_id).where(
+                    UserAcquiredSeller.user_id == user_id,
+                    UserAcquiredSeller.seller_id.in_(cand_ids),
+                )
+            )
+        ).scalars().all()
+    )
+    new_ids = [sid for sid in cand_ids if sid not in already]
+
+    if user.is_super_admin:
+        # 超管：不限额度，但同样落库（去重）——返回的卖家一定要进 user_acquired_sellers
+        if new_ids:
+            await db.execute(
+                pg_insert(UserAcquiredSeller)
+                .values([{"user_id": user_id, "seller_id": sid} for sid in new_ids])
+                .on_conflict_do_nothing(
+                    index_elements=[UserAcquiredSeller.user_id, UserAcquiredSeller.seller_id]
+                )
+            )
+        await db.commit()
+        return cand_ids, {"unlimited": True, "new_granted": len(new_ids)}
+
+    # 普通用户：按剩余月度额度切
     plan = effective_plan(user)
     quota = PLAN_MONTHLY_QUOTA[plan]
-
-    # 2) 本月已用（锁内）
     month_start = _utc_month_start()
     used = (
         await db.execute(
@@ -78,51 +104,33 @@ async def grant_sellers(
     ).scalar_one()
     remaining = max(0, quota - used)
 
-    # 3) 永久去重集合（不限本月）
-    already = set(
-        (
-            await db.execute(
-                select(UserAcquiredSeller.seller_id).where(
-                    UserAcquiredSeller.user_id == user_id,
-                    UserAcquiredSeller.seller_id.in_(cand_ids),
-                )
-            )
-        ).scalars().all()
-    )
-
-    # 4) 按原评分序切配额
-    to_grant: list[str] = []
-    for sid in cand_ids:
-        if sid in already:
-            continue
-        if len(to_grant) >= remaining:
+    granted_new: list[str] = []
+    for sid in new_ids:
+        if len(granted_new) >= remaining:
             break
-        to_grant.append(sid)
-    new_total = len(cand_ids) - len(already)
-    new_skipped = new_total - len(to_grant)
+        granted_new.append(sid)
+    new_skipped = len(new_ids) - len(granted_new)
 
-    # 5) 原子插入 + ON CONFLICT DO NOTHING（纵深防御）→ 提交释放行锁
-    if to_grant:
+    if granted_new:
         await db.execute(
             pg_insert(UserAcquiredSeller)
-            .values([{"user_id": user_id, "seller_id": sid} for sid in to_grant])
+            .values([{"user_id": user_id, "seller_id": sid} for sid in granted_new])
             .on_conflict_do_nothing(
                 index_elements=[UserAcquiredSeller.user_id, UserAcquiredSeller.seller_id]
             )
         )
     await db.commit()
 
-    # 6) 展示集合 = 已获取(旧) + 本次新发，保持原评分序
-    granted_set = already | set(to_grant)
+    granted_set = already | set(granted_new)
     display = [sid for sid in cand_ids if sid in granted_set]
     return display, {
         "plan": plan.value,
         "quota": quota,
         "used": used,
-        "remaining_after": max(0, remaining - len(to_grant)),
-        "new_granted": len(to_grant),
+        "remaining_after": max(0, remaining - len(granted_new)),
+        "new_granted": len(granted_new),
         "new_skipped": new_skipped,
-        "exhausted": remaining == 0 and new_total > 0,
+        "exhausted": remaining == 0 and len(new_ids) > 0,
         "upgrade_available": new_skipped > 0,
     }
 

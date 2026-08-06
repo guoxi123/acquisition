@@ -157,6 +157,9 @@ async def query_db(state: V2State) -> dict:
     category = (state.get("category") or "").strip().lower()
     remaining = state.get("remaining") or 0
     user_id = state.get("user_id")
+    business_country = state.get("business_country")
+    min_total_feedback = state.get("min_total_feedback")
+    min_seller_score = state.get("min_seller_score")
 
     
     if msg_id:
@@ -171,6 +174,13 @@ async def query_db(state: V2State) -> dict:
         Seller.marketplace == marketplace,
         func.lower(Seller.category).like(f"%{category}%"),
     )
+    if business_country:
+        q = q.where(Seller.business_country == business_country)
+    if min_total_feedback:
+        q = q.where(Seller.total_feedback >= min_total_feedback)
+    if min_seller_score:
+        # seller_score 可能为 null（采集入库时未评分），null 也保留，严格评分筛选留给 score_sellers 之后
+        q = q.where((Seller.seller_score >= min_seller_score) | (Seller.seller_score.is_(None)))
     if user_id:
         q = q.where(
             ~Seller.seller_id.in_(
@@ -276,22 +286,27 @@ async def call_actors(state: V2State) -> dict:
     to_enrich = [s for s in sellers if s["seller_id"] not in existing_ids]
     logger.info(f"[call_actors] 第 {round_no} 轮: {len(sellers)} sellers, {len(to_enrich)} 新")
 
-    sem = asyncio.Semaphore(4)
-
-    async def _enrich_one(s):
-        sid = s["seller_id"]
-        async with sem:
-            try:
-                detail = await provider.fetch_seller_profile(sid, domain=marketplace)
-            except Exception as e:
-                detail = {}
-                errors.append(f"seller {sid}: {e}")
-        s["detail"] = detail
-        raw_addr = detail.get("businessAddress") or s["junglee_seller"].get("address")
-        s["addr_str"] = ", ".join(raw_addr) if isinstance(raw_addr, list) else (raw_addr or "")
-        s["business_country"] = parse_country(s["addr_str"])
-
-    await asyncio.gather(*[_enrich_one(s) for s in to_enrich])
+    # 批量获取新卖家详情（一次 actor 调用，替代逐个并发，省费用/时间）
+    if to_enrich:
+        try:
+            details = await provider.fetch_seller_profiles(
+                [s["seller_id"] for s in to_enrich], domain=marketplace
+            )
+        except Exception as e:
+            details = []
+            errors.append(f"batch seller profile: {e}")
+        # actor 返回项的 sellerId 可能叫 sellerId / seller_id / id，按多键匹配
+        detail_map: dict[str, dict] = {}
+        for d in details:
+            sid = d.get("sellerId") or d.get("seller_id") or d.get("id")
+            if sid:
+                detail_map[str(sid)] = d
+        for s in to_enrich:
+            detail = detail_map.get(s["seller_id"], {})
+            s["detail"] = detail
+            raw_addr = detail.get("businessAddress") or s["junglee_seller"].get("address")
+            s["addr_str"] = ", ".join(raw_addr) if isinstance(raw_addr, list) else (raw_addr or "")
+            s["business_country"] = parse_country(s["addr_str"])
 
     # upsert：只对差集（新卖家）插入，已入库的不覆盖；products 按 asin 去重写全量
     async with async_session() as db:

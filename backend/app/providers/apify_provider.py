@@ -3,7 +3,7 @@ from typing import Any
 from app.core.cache import cache_get, cache_set
 from app.core.config import settings
 from app.providers.adapters.amazon_products import fetch_seller_products
-from app.providers.adapters.amazon_seller import fetch_seller_profile
+from app.providers.adapters.amazon_seller import fetch_seller_profile, fetch_seller_profiles
 from app.providers.adapters.junglee_crawler import discover_products_by_category
 from app.providers.adapters.google_search import discover_via_google
 from app.providers.base import DataSourceProvider, SellerCandidate
@@ -61,12 +61,14 @@ class ApifyProvider(DataSourceProvider):
     async def fetch_seller_profile(
         self, seller_id: str, domain: str = "amazon.com"
     ) -> dict[str, Any]:
-        return await _cached(
-            "amazon_seller",
-            seller_id,
-            settings.cache_ttl_seller_hours,
-            lambda: fetch_seller_profile(_get_client(), seller_id, domain),
-        )
+        # 缓存已按需求移除：每次直接调 actor
+        return await fetch_seller_profile(_get_client(), seller_id, domain)
+
+    async def fetch_seller_profiles(
+        self, seller_ids: list[str], domain: str = "amazon.com"
+    ) -> list[dict[str, Any]]:
+        """批量获取卖家详情（一次 actor 调用拿多个，省费用/时间）。"""
+        return await fetch_seller_profiles(_get_client(), seller_ids, domain)
 
     async def fetch_seller_products(
         self, seller_id: str, domain: str = ".com"

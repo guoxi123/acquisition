@@ -19,6 +19,18 @@ class ParsedIntent(BaseModel):
     service_mode: str | None = Field(
         default=None, description="FBA/FBM；未提及为 None"
     )
+    business_country: str | None = Field(
+        default=None,
+        description="卖家国籍意图：China/US/DE；从'中国卖家/美国卖家'推断，未提及 None",
+    )
+    min_total_feedback: int | None = Field(
+        default=None,
+        description="规模下限：从'大卖家/大规模/货量多'推断 feedback 数下限（大≈1000，中≈300），未提及 None",
+    )
+    min_seller_score: int | None = Field(
+        default=None,
+        description="评分下限（0-100）：从'优质/评分高/好评多'推断，未提及 None",
+    )
     need_confirm: bool = Field(
         default=False, description="marketplace 或 category 缺失则为 True"
     )
@@ -28,12 +40,15 @@ class ParsedIntent(BaseModel):
 
 
 INTENT_PROMPT = """你是货代获客的意图解析助手。从用户自然语言查询中提取：
-- marketplace：目标市场（"美国站/US/美国"→amazon.com，"英国站/UK"→amazon.co.uk，"德国站/DE"→amazon.de）
+- marketplace：目标市场（"美国站/US/美国"→amazon.com，"欧洲站/欧洲"→amazon.co.uk，"英国站/UK"→amazon.co.uk，"德国站/DE"→amazon.de）
 - category：产品品类英文（如"户外家具"→outdoor furniture）
 - shipping_type：sea/air（海运/空运），未提及 None
 - service_mode：FBA/FBM，未提及 None
+- business_country：卖家国籍意图（"中国卖家"→China，"美国卖家"→US，"德国卖家"→DE），未提及 None
+- min_total_feedback：规模下限，从"大卖家/大规模/货量多/活跃"等推断 feedback 数下限（大卖家≈1000，中卖家≈300），未提及 None
+- min_seller_score：评分下限（0-100），从"优质/评分高/好评多"推断，未提及 None
 marketplace 和 category 是必要字段，任一缺失 need_confirm=True，并在 missing 列出缺失项中文名（如"目标市场""产品品类"）。
-shipping_type/service_mode 缺失不算 need_confirm。"""
+其余字段（shipping_type/service_mode/business_country/min_total_feedback/min_seller_score）缺失不算 need_confirm。"""
 
 
 async def parse_intent(state: V2State) -> dict:
@@ -69,6 +84,9 @@ async def parse_intent(state: V2State) -> dict:
         "category": parsed.category,
         "shipping_type": parsed.shipping_type,
         "service_mode": parsed.service_mode,
+        "business_country": parsed.business_country,
+        "min_total_feedback": parsed.min_total_feedback,
+        "min_seller_score": parsed.min_seller_score,
         "need_human_confirm": parsed.need_confirm,
         "missing": parsed.missing,
         "human_approved": not parsed.need_confirm,

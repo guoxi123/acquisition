@@ -84,6 +84,15 @@ async def chat_stream(
 
     logger.info(f"[chat/stream] user={user.username} query={req.query[:50]} thread_id={req.thread_id}")
 
+    # 先查配额：超配额直接返回（不意图识别），让前端提示升级
+    if not user.is_super_admin:
+        from app.quota import get_quota_summary
+        async with async_session() as db:
+            summary = await get_quota_summary(db, user)
+        if (summary.get("remaining") or 0) == 0:
+            logger.info(f"[chat/stream] 配额已用完: user={user.username}")
+            return {"status": "exhausted", "quota": summary}
+
     parsed = await parse_intent({"user_query": req.query})
     if parsed.get("need_human_confirm"):
         logger.info(f"[chat/stream] HITL: missing={parsed.get('missing')}")
@@ -121,6 +130,9 @@ async def chat_stream(
         "category": parsed.get("category") or "",
         "shipping_type": parsed.get("shipping_type"),
         "service_mode": parsed.get("service_mode"),
+        "business_country": parsed.get("business_country"),
+        "min_total_feedback": parsed.get("min_total_feedback"),
+        "min_seller_score": parsed.get("min_seller_score"),
         "need_human_confirm": False,
         "missing": [],
         "human_approved": True,
@@ -162,12 +174,16 @@ async def cancel_stream(
         return {"status": "not_found", "message": "没有正在运行的任务"}
 
     task, assistant_msg_id = task_info
-    if not task.done():
-        task.cancel()
-        logger.info(f"[chat/stream] 已请求取消: thread={thread_id}")
-        return {"status": "cancelled", "message": "取消请求已发送"}
+    if task.done():
+        return {"status": "already_done"}
 
-    return {"status": "already_done"}
+    # task 还在跑：主动写收尾 meta（task 可能卡在 to_thread 同步调用，task.cancel 会延迟，
+    # 不能依赖 _run_stream_graph 的 CancelledError except，否则刷新时 done 没写 → 重连 SSE 卡 loading）
+    from app.agent.v2.nodes import _write_msg
+    await _write_msg(assistant_msg_id, meta_patch={"done": True, "cancelled": True})
+    task.cancel()
+    logger.info(f"[chat/stream] 已请求取消: thread={thread_id}")
+    return {"status": "cancelled", "message": "取消请求已发送"}
 
 
 @router.get("/{thread_id}/events")

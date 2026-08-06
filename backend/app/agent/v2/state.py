@@ -10,6 +10,9 @@ class V2State(TypedDict):
     category: str | None
     shipping_type: str | None  # sea / air
     service_mode: str | None  # FBA / FBM
+    business_country: str | None  # 卖家国籍意图（China/US...），query_db 过滤用
+    min_total_feedback: int | None  # 规模下限（feedback 数），query_db 过滤用
+    min_seller_score: int | None  # 评分下限（0-100），query_db 过滤用
     # 流程控制
     need_human_confirm: bool
     missing: list[str]
