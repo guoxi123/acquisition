@@ -84,7 +84,7 @@ export default function HomePage() {
               登录
             </Link>
             <Link
-              href={loggedIn ? "/chat" : "/register"}
+              href={loggedIn ? "/chat" : "/login"}
               className="rounded-lg bg-gradient-to-r from-indigo-600 to-blue-600 px-4 py-2 text-sm font-medium text-white shadow-lg shadow-indigo-500/30 transition hover:from-indigo-500 hover:to-blue-500"
             >
               {loggedIn ? "进入工作台" : "免费开始"}
@@ -133,7 +133,7 @@ export default function HomePage() {
           </p>
           <div className="mt-10 flex flex-col items-center justify-center gap-4 sm:flex-row">
             <Link
-              href={loggedIn ? "/chat" : "/register"}
+              href={loggedIn ? "/chat" : "/login"}
               className="group rounded-xl bg-gradient-to-r from-indigo-600 to-blue-600 px-8 py-4 text-base font-medium text-white shadow-2xl shadow-indigo-500/30 transition hover:from-indigo-500 hover:to-blue-500 hover:shadow-indigo-500/40"
             >
               立即开始 →

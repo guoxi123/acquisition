@@ -143,6 +143,9 @@ export default function RegisterPage() {
             登录
           </Link>
         </p>
+        <p className="mt-3 text-center text-sm">
+          <Link href="/" className="text-zinc-500 transition hover:text-zinc-300">← 返回首页</Link>
+        </p>
       </div>
     </main>
   );

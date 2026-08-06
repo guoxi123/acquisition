@@ -121,50 +121,11 @@ export type Seller = {
   contacts?: { source: string; type: string; value: string }[];
 };
 
-export type ChatResponse = {
-  thread_id: string;
-  status: "need_input" | "done";
-  interrupt?: {
-    question: string;
-    current: { marketplace?: string; category?: string };
-  };
-  result?: { sellers: Seller[]; count: number; reply?: string; quota?: QuotaMeta };
-  user?: AuthUser;
-};
-
 function authHeaders(): Record<string, string> {
   const token = getToken();
   return token
     ? { "Content-Type": "application/json", Authorization: `Bearer ${token}` }
     : { "Content-Type": "application/json" };
-}
-
-export async function chat(
-  query: string,
-  threadId?: string,
-): Promise<ChatResponse> {
-  const res = await fetch(`${API_BASE}/api/chat`, {
-    method: "POST",
-    headers: authHeaders(),
-    body: JSON.stringify({ query, thread_id: threadId }),
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.detail || `chat failed: ${res.status}`);
-  return data as ChatResponse;
-}
-
-export async function chatResume(
-  threadId: string,
-  response: Record<string, unknown>,
-): Promise<ChatResponse> {
-  const res = await fetch(`${API_BASE}/api/chat/resume`, {
-    method: "POST",
-    headers: authHeaders(),
-    body: JSON.stringify({ thread_id: threadId, response }),
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.detail || `resume failed: ${res.status}`);
-  return data as ChatResponse;
 }
 
 // ===== 会话历史 =====
@@ -245,6 +206,8 @@ export async function getSessionMessages(
 export async function streamChat(
   query: string,
   threadId?: string,
+  marketplace?: string,
+  category?: string,
 ): Promise<{
   status: string;
   thread_id?: string;
@@ -256,7 +219,7 @@ export async function streamChat(
   const res = await fetch(`${API_BASE}/api/chat/stream`, {
     method: "POST",
     headers: authHeaders(),
-    body: JSON.stringify({ query, thread_id: threadId }),
+    body: JSON.stringify({ query, thread_id: threadId, marketplace, category }),
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.detail || `stream failed: ${res.status}`);
@@ -269,6 +232,7 @@ export function connectStream(
   onSellers: (sellers: Seller[]) => void,
   onProgress: (steps: ProgressStep[]) => void,
   onDone: (sellers: Seller[], cancelled: boolean | undefined, quota: QuotaMeta | undefined) => void,
+  onNeedInput: (p: { missing?: string[]; marketplace?: string; category?: string }) => void,
   onError: (err: string) => void,
 ): AbortController {
   const controller = new AbortController();
@@ -291,8 +255,11 @@ export function connectStream(
         for (const line of lines) {
           if (line.startsWith("data: ")) {
             const data = JSON.parse(line.slice(6));
-            if (data.done) onDone(data.sellers || [], data.cancelled, data as QuotaMeta);
-            else if (data.delta) onDelta(data.delta);
+            if (data.done) {
+              // HITL：信息不全，后端写 need_input，转补充 UI；否则正常收尾
+              if (data.need_input) onNeedInput(data);
+              else onDone(data.sellers || [], data.cancelled, data as QuotaMeta);
+            } else if (data.delta) onDelta(data.delta);
             else if (data.sellers) onSellers(data.sellers);
             else if (data.progress) onProgress(data.progress);
           }

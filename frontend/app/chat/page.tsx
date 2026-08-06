@@ -7,8 +7,6 @@ import { useEffect, useRef, useState } from "react";
 
 import {
   cancelStream,
-  chat,
-  chatResume,
   clearToken,
   connectStream,
   createChatSession,
@@ -120,71 +118,76 @@ export default function ChatPage() {
           }
           return ms;
         });
-        const ctrl = connectStream(
-          sid,
-          (delta) => {
-            setMessages((m) => {
-              const last = m[m.length - 1];
-              if (last && last.role === "assistant") {
-                return [...m.slice(0, -1), { ...last, text: last.text + delta }];
-              }
-              return [...m, { role: "assistant", text: delta }];
-            });
-          },
-          (sellers) => {
-            setMessages((m) => {
-              const last = m[m.length - 1];
-              if (last && last.role === "assistant") {
-                return [...m.slice(0, -1), { ...last, sellers }];
-              }
-              return m;
-            });
-          },
-          (progress) => {
-            setMessages((m) => {
-              const last = m[m.length - 1];
-              if (last && last.role === "assistant") {
-                return [...m.slice(0, -1), { ...last, progress }];
-              }
-              return m;
-            });
-          },
-          (_sellers, _cancelled, quota) => {
-            setLoading(false);
-            setMessages((m) => {
-              const last = m[m.length - 1];
-              if (last && last.role === "assistant") {
-                return [...m.slice(0, -1), { ...last, quota }];
-              }
-              return m;
-            });
-            listSessions().then(setSessions).catch(() => {});
-          },
-          (err) => {
-            setMessages((m) => [...m.slice(0, -1), { role: "assistant", text: `错误：${err}` }]);
-            setLoading(false);
-          },
-        );
-        streamControllerRef.current = ctrl;
+        attachStream(sid);
       }
     } catch {
       setMessages([]);
     }
   }
 
-  function handleResponse(r: Awaited<ReturnType<typeof chat>>) {
-    setThreadId(r.thread_id);
-    if (r.status === "need_input" && r.interrupt) {
-      setPendingInterrupt(r.interrupt);
-      setMessages((m) => [...m, { role: "assistant", text: r.interrupt!.question }]);
-    } else if (r.status === "done" && r.result) {
-      setPendingInterrupt(null);
-      setMessages((m) => [
-        ...m,
-        { role: "assistant", text: `找到 ${r.result!.count} 个卖家：`, sellers: r.result!.sellers, quota: r.result!.quota },
-      ]);
-    }
-    listSessions().then(setSessions).catch(() => {});
+  // SSE done 带 need_input：信息不全，进入补充 UI（pendingInterrupt 驱动输入框）
+  function handleNeedInput(p: { missing?: string[]; marketplace?: string; category?: string }) {
+    const missing = p.missing && p.missing.length > 0 ? p.missing : ["目标市场", "产品品类"];
+    setPendingInterrupt({
+      question: `请补充：${missing.join("、")}`,
+      current: { marketplace: p.marketplace, category: p.category },
+    });
+    setLoading(false);
+    streamControllerRef.current = null;
+  }
+
+  // 统一接 SSE（send / resume / 断点续传共用）：delta/sellers/progress 流式渲染，done 收尾
+  function attachStream(tid: string) {
+    const ctrl = connectStream(
+      tid,
+      (delta) => {
+        setMessages((m) => {
+          const last = m[m.length - 1];
+          if (last && last.role === "assistant") {
+            return [...m.slice(0, -1), { ...last, text: last.text + delta }];
+          }
+          return [...m, { role: "assistant", text: delta }];
+        });
+      },
+      (sellers) => {
+        setMessages((m) => {
+          const last = m[m.length - 1];
+          if (last && last.role === "assistant") {
+            return [...m.slice(0, -1), { ...last, sellers }];
+          }
+          return [...m, { role: "assistant", text: "", sellers }];
+        });
+      },
+      (progress) => {
+        setMessages((m) => {
+          const last = m[m.length - 1];
+          if (last && last.role === "assistant") {
+            return [...m.slice(0, -1), { ...last, progress }];
+          }
+          return m;
+        });
+      },
+      (_sellers, _cancelled, quota) => {
+        setLoading(false);
+        streamControllerRef.current = null;
+        setMessages((m) => {
+          const last = m[m.length - 1];
+          if (last && last.role === "assistant") {
+            return [...m.slice(0, -1), { ...last, quota }];
+          }
+          return m;
+        });
+        listSessions().then(setSessions).catch(() => {});
+      },
+      handleNeedInput,
+      (err) => {
+        setMessages((m) => [...m.slice(0, -1), { role: "assistant", text: `错误：${err}` }]);
+        setLoading(false);
+        streamControllerRef.current = null;
+      },
+    );
+    streamControllerRef.current = ctrl;
+    return ctrl;
   }
 
   async function pause() {
@@ -209,64 +212,12 @@ export default function ChatPage() {
     setLoading(true);
     try {
       const res = await streamChat(q, threadId ?? undefined);
-      if (res.status === "need_input") {
-        // 转同步 HITL（/api/chat 创建 session + LangGraph interrupt + checkpoint + thread_id）
-        const r = await chat(q, threadId ?? undefined);
-        handleResponse(r);
-        setLoading(false);
-        return;
-      }
       if (res.status === "streaming" && res.thread_id) {
         setThreadId(res.thread_id);
         setMessages((m) => [...m, { role: "assistant", text: "" }]);
-        const ctrl = connectStream(
-          res.thread_id,
-          (delta) => {
-            setMessages((m) => {
-              const last = m[m.length - 1];
-              if (last && last.role === "assistant") {
-                return [...m.slice(0, -1), { ...last, text: last.text + delta }];
-              }
-              return [...m, { role: "assistant", text: delta }];
-            });
-          },
-          (sellers) => {
-            setMessages((m) => {
-              const last = m[m.length - 1];
-              if (last && last.role === "assistant") {
-                return [...m.slice(0, -1), { ...last, sellers }];
-              }
-              return [...m, { role: "assistant", text: "", sellers }];
-            });
-          },
-          (progress) => {
-            setMessages((m) => {
-              const last = m[m.length - 1];
-              if (last && last.role === "assistant") {
-                return [...m.slice(0, -1), { ...last, progress }];
-              }
-              return m;
-            });
-          },
-          (_sellers, _cancelled, quota) => {
-            setLoading(false);
-            streamControllerRef.current = null;
-            setMessages((m) => {
-              const last = m[m.length - 1];
-              if (last && last.role === "assistant") {
-                return [...m.slice(0, -1), { ...last, quota }];
-              }
-              return m;
-            });
-            listSessions().then(setSessions).catch(() => {});
-          },
-          (err) => {
-            setMessages((m) => [...m.slice(0, -1), { role: "assistant", text: `错误：${err}` }]);
-            setLoading(false);
-            streamControllerRef.current = null;
-          },
-        );
-        streamControllerRef.current = ctrl;
+        attachStream(res.thread_id);
+      } else {
+        setLoading(false);
       }
     } catch (e) {
       setMessages((m) => [...m, { role: "assistant", text: `错误：${e}` }]);
@@ -277,26 +228,33 @@ export default function ChatPage() {
   async function resume() {
     if (!threadId || loading) return;
     const t = input.trim();
-    const response: Record<string, string> = {};
+    let marketplace: string | undefined;
+    let category: string | undefined;
     if (t.startsWith("marketplace=")) {
       const [mp, cat] = t.split(",");
-      response.marketplace = mp.split("=")[1]?.trim();
-      if (cat?.includes("=")) response.category = cat.split("=")[1]?.trim();
+      marketplace = mp.split("=")[1]?.trim();
+      if (cat?.includes("=")) category = cat.split("=")[1]?.trim();
     } else {
-      response.category = t;
-      response.marketplace = pendingInterrupt?.current?.marketplace || "amazon.com";
+      category = t;
+      marketplace = pendingInterrupt?.current?.marketplace;
     }
     setInput("");
     setMessages((m) => [...m, { role: "user", text: t }]);
     setPendingInterrupt(null);
     setLoading(true);
     try {
-      const r = await chatResume(threadId, response);
-      handleResponse(r);
+      // 注入补充的 marketplace/category 重跑流式图（parse_intent 用注入值覆盖）
+      const res = await streamChat(t, threadId, marketplace, category);
+      if (res.status === "streaming" && res.thread_id) {
+        setMessages((m) => [...m, { role: "assistant", text: "" }]);
+        attachStream(res.thread_id);
+      } else {
+        setLoading(false);
+      }
     } catch (e) {
       setMessages((m) => [...m, { role: "assistant", text: `错误：${e}` }]);
+      setLoading(false);
     }
-    setLoading(false);
   }
 
   function exportCSV(sellers: Seller[]) {

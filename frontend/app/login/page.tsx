@@ -63,6 +63,9 @@ export default function LoginPage() {
         <p className="mt-6 text-center text-sm text-zinc-500">
           没有账号？<Link href="/register" className="text-cyan-400 transition hover:text-cyan-300">注册</Link>
         </p>
+        <p className="mt-3 text-center text-sm">
+          <Link href="/" className="text-zinc-500 transition hover:text-zinc-300">← 返回首页</Link>
+        </p>
       </div>
     </main>
   );
