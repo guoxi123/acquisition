@@ -43,6 +43,12 @@ class Settings(BaseSettings):
     acquired_admin_max: int = 50  # 超管每次查询返回的卖家数（超管不限额度，走相同流程）
     max_fetch_rounds: int = 3    # 库不够时采集最大轮次
 
+    # 阿里云短信（注册验证码）；凭证走 backend/.env，勿提交真实值。未配置则走 mock（日志打印码）
+    aliyun_sms_access_key_id: str = ""
+    aliyun_sms_access_key_secret: str = ""
+    aliyun_sms_sign_name: str = ""
+    aliyun_sms_template_code: str = "100001"
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

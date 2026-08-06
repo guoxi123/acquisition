@@ -22,6 +22,7 @@ class User(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     username: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    phone: Mapped[str | None] = mapped_column(String(20), unique=True, index=True, nullable=True)
     password_hash: Mapped[str] = mapped_column(String(255))
     is_super_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     plan: Mapped[UserPlan] = mapped_column(

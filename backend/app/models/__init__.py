@@ -12,6 +12,7 @@ from app.models.lead import Contact, Lead, LeadScoreTier, LeadSignal, LeadStatus
 from app.models.product import Product
 from app.models.query_log import QueryLog
 from app.models.seller import Seller
+from app.models.sms_code import SmsCode
 from app.models.user import User
 from app.models.user_acquired_seller import UserAcquiredSeller
 
@@ -28,6 +29,7 @@ __all__ = [
     "Job",
     "JobStatus",
     "Seller",
+    "SmsCode",
     "Product",
     "QueryLog",
     "User",

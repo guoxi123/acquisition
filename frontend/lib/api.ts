@@ -20,6 +20,7 @@ export function clearToken(): void {
 export type AuthUser = {
   id: string;
   username: string;
+  phone: string | null;
   is_super_admin: boolean;
   plan: string; // free | basic | super
   plan_expires_at: string | null;
@@ -49,29 +50,40 @@ export type QuotaMeta = {
 
 export type AuthMe = AuthUser & { quota: Quota };
 
-export async function login(username: string, password: string): Promise<AuthUser> {
-  const res = await fetch(`${API_BASE}/api/auth/login`, {
+export async function sendSms(phone: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/auth/sms/send`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ phone }),
   });
   const data = await res.json();
-  if (!res.ok) throw new Error(data.detail || "登录失败");
-  setToken(data.token);
-  return data.user as AuthUser;
+  if (!res.ok) throw new Error(data.detail || "验证码发送失败");
 }
 
 export async function register(
-  username: string,
+  phone: string,
+  code: string,
   password: string,
 ): Promise<AuthUser> {
   const res = await fetch(`${API_BASE}/api/auth/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ phone, code, password }),
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.detail || "注册失败");
+  setToken(data.token);
+  return data.user as AuthUser;
+}
+
+export async function login(account: string, password: string): Promise<AuthUser> {
+  const res = await fetch(`${API_BASE}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ account, password }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.detail || "登录失败");
   setToken(data.token);
   return data.user as AuthUser;
 }

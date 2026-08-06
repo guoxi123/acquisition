@@ -7,7 +7,7 @@ import { useState } from "react";
 import { login } from "@/lib/api";
 
 export default function LoginPage() {
-  const [username, setUsername] = useState("");
+  const [account, setAccount] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -18,7 +18,7 @@ export default function LoginPage() {
     setLoading(true);
     setError("");
     try {
-      await login(username, password);
+      await login(account, password);
       router.push("/chat");
     } catch (err) {
       setError(err instanceof Error ? err.message : "登录失败");
@@ -38,9 +38,9 @@ export default function LoginPage() {
         <form onSubmit={onSubmit} className="space-y-4 rounded-2xl border border-white/10 bg-white/[0.03] p-8 backdrop-blur-xl">
           <input
             className="w-full rounded-xl border border-white/10 bg-white/[0.05] px-4 py-3 text-sm text-white placeholder-zinc-500 outline-none transition focus:border-indigo-500/50 focus:ring-2 focus:ring-indigo-500/20"
-            placeholder="用户名"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
+            placeholder="手机号（超管可用用户名）"
+            value={account}
+            onChange={(e) => setAccount(e.target.value)}
             required
           />
           <input
