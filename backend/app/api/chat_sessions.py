@@ -56,7 +56,7 @@ async def list_sessions(user: User = Depends(get_current_user)) -> dict:
                     "session_id": str(s.session_id),
                     "created_at": s.created_at.isoformat(),
                     "total_messages": s.total_messages,
-                    "title": (first_user_msg.content[:40] if first_user_msg else "新会话"),
+                    "title": s.title or (first_user_msg.content[:40] if first_user_msg else "新会话"),
                 }
             )
     return {"sessions": result}
@@ -81,3 +81,40 @@ async def get_messages_api(
             for m in msgs
         ]
     }
+
+
+@router.delete("/{session_id}")
+async def delete_session_api(
+    session_id: str, user: User = Depends(get_current_user)
+) -> dict:
+    """删除会话（消息级联删除）。验证归属：自己的或超管。"""
+    sid = uuid.UUID(session_id)
+    async with async_session() as db:
+        session = await db.get(MemorySession, sid)
+        if session is None:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        if session.user_id != user.id and not user.is_super_admin:
+            raise HTTPException(status_code=403, detail="无权操作此会话")
+        await db.delete(session)
+        await db.commit()
+    return {"status": "deleted"}
+
+
+@router.patch("/{session_id}")
+async def rename_session_api(
+    session_id: str, payload: dict, user: User = Depends(get_current_user)
+) -> dict:
+    """重命名会话（更新 title）。验证归属：自己的或超管。"""
+    sid = uuid.UUID(session_id)
+    title = (payload.get("title") or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="标题不能为空")
+    async with async_session() as db:
+        session = await db.get(MemorySession, sid)
+        if session is None:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        if session.user_id != user.id and not user.is_super_admin:
+            raise HTTPException(status_code=403, detail="无权操作此会话")
+        session.title = title[:100]
+        await db.commit()
+    return {"session_id": session_id, "title": session.title}

@@ -12,10 +12,12 @@ import {
   clearToken,
   connectStream,
   createChatSession,
+  deleteSession,
   fetchMe,
   getToken,
   getSessionMessages,
   listSessions,
+  renameSession,
   streamChat,
   type AuthMe,
   type ChatSession,
@@ -32,8 +34,20 @@ type Msg = {
   quota?: QuotaMeta;
 };
 
+// 进入对话页 / 新建会话时 agent 主动给出的能力引导（静态欢迎语，用户输入前先看到）
+const WELCOME: Msg = {
+  role: "assistant",
+  text:
+    "你好！我是**亚马逊卖家获客助手**，按「**目标市场 + 品类**」帮你找潜在卖家（含联系方式、评分、国籍）。\n\n" +
+    "**示例输入**\n" +
+    "- 美国站卖户外家具的中国卖家\n" +
+    "- 英国站卖杯子的卖家\n\n" +
+    "**额度**：免费用户每月 10 个，初级 200 个；额度用完可联系管理员升级。\n\n" +
+    "请输入目标市场 + 品类开始查询。",
+};
+
 export default function ChatPage() {
-  const [messages, setMessages] = useState<Msg[]>([]);
+  const [messages, setMessages] = useState<Msg[]>([WELCOME]);
   const [input, setInput] = useState("");
   const [threadId, setThreadId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -46,6 +60,9 @@ export default function ChatPage() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const streamControllerRef = useRef<AbortController | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -78,6 +95,10 @@ export default function ChatPage() {
     setPendingInterrupt(null);
     try {
       const msgs = await getSessionMessages(sid);
+      if (msgs.length === 0) {
+        setMessages([WELCOME]); // 空会话：显示欢迎语引导
+        return;
+      }
       setMessages(
         msgs.map((m) => ({
           role: m.role as "user" | "assistant",
@@ -303,10 +324,16 @@ export default function ChatPage() {
         <div className="flex flex-1 flex-col overflow-hidden p-4">
           <button
             onClick={async () => {
+              // 当前会话已是新会话（无用户消息）→ 不再重复新建，避免空会话堆积
+              if (!messages.some((m) => m.role === "user")) {
+                setToast("当前已是新会话，直接输入即可");
+                setTimeout(() => setToast(null), 2000);
+                return;
+              }
               try {
                 const { session_id } = await createChatSession();
                 setThreadId(session_id);
-                setMessages([]);
+                setMessages([WELCOME]);
                 setPendingInterrupt(null);
                 listSessions().then(setSessions).catch(() => {});
               } catch (e) {
@@ -343,19 +370,108 @@ export default function ChatPage() {
                 items.length > 0 ? (
                   <div key={label}>
                     <p className="mb-1 mt-3 text-[10px] font-medium uppercase tracking-wider text-zinc-500">{label}</p>
-                    {items.map((s) => (
-                      <button
-                        key={s.session_id}
-                        onClick={() => loadSession(s.session_id)}
-                        className={`block w-full truncate rounded-md px-3 py-2 text-left text-sm transition ${
-                          threadId === s.session_id
-                            ? "border-l-2 border-indigo-500 bg-indigo-500/10 font-medium text-indigo-300"
-                            : "text-zinc-400 hover:bg-white/5 hover:text-zinc-200"
-                        }`}
-                      >
-                        {s.title || "新会话"}
-                      </button>
-                    ))}
+                    {items.map((s) => {
+                      const isActive = threadId === s.session_id;
+                      const isRenaming = renamingId === s.session_id;
+                      const isConfirming = confirmDeleteId === s.session_id;
+                      const itemCls = `group flex items-center gap-1 rounded-md px-3 py-2 text-sm transition ${
+                        isActive
+                          ? "border-l-2 border-indigo-500 bg-indigo-500/10 font-medium text-indigo-300"
+                          : "text-zinc-400 hover:bg-white/5 hover:text-zinc-200"
+                      }`;
+                      const commitRename = () => {
+                        const t = renameValue.trim();
+                        setRenamingId(null);
+                        if (t && t !== s.title) {
+                          renameSession(s.session_id, t)
+                            .then(() => listSessions().then(setSessions).catch(() => {}))
+                            .catch((err) => {
+                              setToast(err instanceof Error ? err.message : String(err));
+                              setTimeout(() => setToast(null), 2000);
+                            });
+                        }
+                      };
+                      const doDelete = () => {
+                        setConfirmDeleteId(null);
+                        deleteSession(s.session_id)
+                          .then(() => {
+                            if (threadId === s.session_id) {
+                              setThreadId(null);
+                              setMessages([WELCOME]);
+                            }
+                            listSessions().then(setSessions).catch(() => {});
+                          })
+                          .catch((err) => {
+                            setToast(err instanceof Error ? err.message : String(err));
+                            setTimeout(() => setToast(null), 2000);
+                          });
+                      };
+                      return (
+                        <div key={s.session_id} className={itemCls}>
+                          {isRenaming ? (
+                            <input
+                              autoFocus
+                              value={renameValue}
+                              onChange={(e) => setRenameValue(e.target.value)}
+                              onBlur={commitRename}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") commitRename();
+                                if (e.key === "Escape") setRenamingId(null);
+                              }}
+                              className="flex-1 rounded border border-indigo-500/40 bg-black/40 px-2 py-0.5 text-sm text-white outline-none"
+                            />
+                          ) : isConfirming ? (
+                            <div className="flex flex-1 items-center justify-between gap-2">
+                              <span className="truncate text-red-300">删除此会话？</span>
+                              <span className="flex shrink-0 gap-2">
+                                <button
+                                  onClick={doDelete}
+                                  className="rounded bg-red-600/80 px-2 py-0.5 text-xs text-white hover:bg-red-500"
+                                >
+                                  删除
+                                </button>
+                                <button
+                                  onClick={() => setConfirmDeleteId(null)}
+                                  className="text-xs text-zinc-400 hover:text-zinc-200"
+                                >
+                                  取消
+                                </button>
+                              </span>
+                            </div>
+                          ) : (
+                            <>
+                              <button
+                                onClick={() => loadSession(s.session_id)}
+                                className="flex-1 truncate text-left"
+                              >
+                                {s.title || "新会话"}
+                              </button>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setRenamingId(s.session_id);
+                                  setRenameValue(s.title || "");
+                                }}
+                                className="hidden shrink-0 text-xs text-zinc-500 hover:text-cyan-400 group-hover:inline"
+                                title="重命名"
+                              >
+                                ✏
+                              </button>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setConfirmDeleteId(s.session_id);
+                                }}
+                                className="hidden shrink-0 text-xs text-zinc-500 hover:text-red-400 group-hover:inline"
+                                title="删除"
+                              >
+                                🗑
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 ) : null,
               );
@@ -380,7 +496,7 @@ export default function ChatPage() {
               <p className="mt-1 text-xs text-zinc-500">额度：不限</p>
             )}
             <button
-              onClick={() => { clearToken(); window.location.href = "/login"; }}
+              onClick={() => { clearToken(); window.location.href = "/"; }}
               className="mt-2 text-xs text-zinc-500 transition hover:text-red-400"
             >
               退出登录

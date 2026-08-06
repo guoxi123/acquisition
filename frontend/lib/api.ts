@@ -203,6 +203,31 @@ export async function createChatSession(): Promise<{ session_id: string }> {
   return data as { session_id: string };
 }
 
+export async function deleteSession(sessionId: string): Promise<void> {
+  const token = getToken();
+  const res = await fetch(`${API_BASE}/api/chat/sessions/${sessionId}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.detail || "删除失败");
+}
+
+export async function renameSession(
+  sessionId: string,
+  title: string,
+): Promise<{ title: string }> {
+  const token = getToken();
+  const res = await fetch(`${API_BASE}/api/chat/sessions/${sessionId}`, {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.detail || "重命名失败");
+  return data;
+}
+
 export async function getSessionMessages(
   sessionId: string,
 ): Promise<ChatMsg[]> {

@@ -78,6 +78,7 @@ class MemorySession(Base):
     user_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("users.id"), nullable=True, index=True
     )
+    title: Mapped[str | None] = mapped_column(String(100), nullable=True)  # 自定义标题；为空时取首条用户消息
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
