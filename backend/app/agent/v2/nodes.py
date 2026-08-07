@@ -652,12 +652,13 @@ async def classify_intent(state: V2State) -> dict:
     from app.agent.orchestrator import _structured_invoke
 
     class IntentClass(BaseModel):
-        intent: Literal["acquisition", "chat"] = Field(default="acquisition")
+        intent: Literal["acquisition", "query", "chat"] = Field(default="acquisition")
 
     classify_prompt = """判断用户查询的意图类别：
-- acquisition：找亚马逊卖家/获客相关（出现目标市场如“美国站/欧洲站”、品类、找卖家、FBA/FBM、联系方式、中国卖家、采集、评分等）
+- acquisition：找/搜/采集【新】亚马逊卖家（出现目标市场如“美国站/欧洲站”、品类、找卖家、FBA/FBM、中国卖家等，需要采集新数据）
+- query：查看/筛选/统计用户【已获取】的卖家或库存数据（“我的卖家/我获取的/已获取的/收藏的/查看/筛选/统计/多少个”等）
 - chat：其他（问候、闲聊、问你是谁/能做什么、求助、与找卖家无关）
-只返回 intent 字段（acquisition 或 chat）。"""
+只返回 intent 字段（acquisition / query / chat）。"""
 
     msg_id = state.get("assistant_msg_id")
     if msg_id:
@@ -672,7 +673,7 @@ async def classify_intent(state: V2State) -> dict:
     )
     intent = result.intent if result else "acquisition"  # 解析失败默认走获客主流程
     if msg_id:
-        await update_progress(msg_id, "classify_intent", f"意图：{'获客' if intent == 'acquisition' else '咨询'}", "done")
+        await update_progress(msg_id, "classify_intent", f"意图：{'获客' if intent == 'acquisition' else '查询' if intent == 'query' else '咨询'}", "done")
     return {"intent": intent}
 
 
@@ -735,3 +736,50 @@ async def direct_llm(state: V2State) -> dict:
     if msg_id:
         await update_progress(msg_id, "direct_llm", "已回复", "done")
     return {"final_result": {"reply": reply, "direct": True}}
+
+
+async def query_agent_node(state: V2State) -> dict:
+    """query 意图：调 query_agent 子图（手写 LangGraph ReAct）自主调 skills 查数据并回答。
+    只读、不采集；加 skill 到 ALL_TOOLS 即自动可用。"""
+    import json as _json
+
+    from langchain_core.messages import HumanMessage
+
+    from app.agent.query_agent import build_query_agent
+    from app.agent.skills import ALL_TOOLS
+
+    msg_id = state.get("assistant_msg_id")
+    user_id = state.get("user_id") or ""
+    if msg_id:
+        await update_progress(msg_id, "query_agent", "查询数据…", "running")
+
+    system_prompt = (
+        "你是「获客 Agent」的数据查询助手。根据用户查询调用工具查询【已获取/库存】数据，用简洁中文回答。\n"
+        f"当前用户 user_id={user_id}，调用工具时把它作为 user_id 传入，不要向用户询问 user_id。\n"
+        "若用户其实想找【新】卖家（需要采集），提示其改用「目标市场+品类」（如「美国站卖户外家具的中国卖家」）发起获客查询。"
+    )
+    # 手写 LangGraph ReAct 子图（agent ⟷ tools 循环），不依赖 prebuilt
+    subgraph = build_query_agent(ALL_TOOLS, system_prompt)
+    result = await subgraph.ainvoke(
+        {"messages": [HumanMessage(content=state.get("user_query", ""))]}
+    )
+
+    messages = result.get("messages", [])
+    # 最终回答 = 最后一条无 tool_calls 的 AI 消息；sellers 从 tool 消息提取
+    final_text = ""
+    sellers: list = []
+    for m in messages:
+        if getattr(m, "type", "") == "tool":
+            try:
+                parsed = _json.loads(m.content) if isinstance(m.content, str) else m.content
+                if isinstance(parsed, list):
+                    sellers = parsed
+            except Exception:
+                pass
+        if getattr(m, "type", "") == "ai" and not getattr(m, "tool_calls", None):
+            final_text = m.content or ""
+
+    if msg_id:
+        await _write_msg(msg_id, content=str(final_text), meta_patch={"sellers": sellers, "done": True})
+        await update_progress(msg_id, "query_agent", f"查询完成，{len(sellers)} 个卖家", "done")
+    return {"final_result": {"query": True, "count": len(sellers)}}

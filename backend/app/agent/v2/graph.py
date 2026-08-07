@@ -21,6 +21,7 @@ from app.agent.v2.nodes import (
     llm_analysis,
     lookup_contacts,
     output_result,
+    query_agent_node,
     query_db,
     score_sellers,
 )
@@ -65,6 +66,7 @@ def build_stream_graph(checkpointer=None):
     builder = StateGraph(V2State)
     builder.add_node("classify_intent", classify_intent)
     builder.add_node("direct_llm", direct_llm)
+    builder.add_node("query_agent", query_agent_node)
     builder.add_node("check_quota", check_quota)
     builder.add_node("parse_intent", parse_intent)
     builder.add_node("query_db", query_db)
@@ -75,11 +77,16 @@ def build_stream_graph(checkpointer=None):
     builder.add_node("output_result", output_result)
 
     builder.add_edge(START, "classify_intent")
-    # 前置意图判定：获客 → check_quota 主流程；其他 → direct_llm 直接回复
+    # 前置意图判定：获客→check_quota 主流程；查询→query_agent；其他→direct_llm
     builder.add_conditional_edges(
         "classify_intent",
-        lambda s: "check_quota" if s.get("intent") == "acquisition" else "direct_llm",
+        lambda s: (
+            "check_quota" if s.get("intent") == "acquisition"
+            else "query_agent" if s.get("intent") == "query"
+            else "direct_llm"
+        ),
     )
+    builder.add_edge("query_agent", END)
     builder.add_edge("direct_llm", END)
     # 配额耗尽 → output_result 提示升级；否则意图识别（else 去向，勿再 add_edge）
     builder.add_conditional_edges(
