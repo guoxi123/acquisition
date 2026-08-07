@@ -31,7 +31,7 @@ export default function HomePage() {
     {
       icon: "📞",
       title: "联系方式挖掘",
-      desc: "对接天眼查/企查查，自动匹配企业电话、邮箱，直接触达决策人",
+      desc: "自动匹配企业电话、邮箱等联系方式，直接触达决策人",
     },
     {
       icon: "🤖",

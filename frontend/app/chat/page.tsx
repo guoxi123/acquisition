@@ -488,7 +488,6 @@ export default function ChatPage() {
                         <span className="flex items-center gap-1">
                           <span className="text-indigo-400">🧠</span>
                           思考过程
-                          <span className="text-zinc-600">（{m.progress.filter((p) => p.status === "done").length}/{m.progress.length}）</span>
                         </span>
                       </summary>
                       <div className="mt-1.5 space-y-1 border-b border-white/5 pb-2">
