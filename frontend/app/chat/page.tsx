@@ -38,8 +38,7 @@ const WELCOME: Msg = {
   text:
     "你好！我是**亚马逊卖家获客助手**，按「**目标市场 + 品类**」帮你找潜在卖家（含联系方式、评分、国籍）。\n\n" +
     "**示例输入**\n" +
-    "- 美国站卖户外家具的中国卖家\n" +
-    "- 英国站卖杯子的卖家\n\n" +
+    "- 美国站卖杯子的2个中国卖家\n\n" +
     "**额度**：免费用户每月 10 个，初级 200 个；额度用完可联系管理员升级。\n\n" +
     "请输入目标市场 + 品类开始查询。",
 };
@@ -570,7 +569,7 @@ export default function ChatPage() {
               <input
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                placeholder="输入查询，如：美国站卖户外家具的FBA卖家"
+                placeholder="美国站卖杯子的2个中国卖家"
                 className="flex-1 rounded-xl border border-white/10 bg-white/[0.05] px-4 py-2.5 text-sm text-white placeholder-zinc-500 outline-none transition focus:border-indigo-500/50 focus:ring-2 focus:ring-indigo-500/20"
                 onKeyDown={(e) => e.key === "Enter" && (loading ? pause() : send())}
               />
