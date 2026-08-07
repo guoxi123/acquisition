@@ -27,3 +27,8 @@ out/
 
 # DB
 *.sqlite3
+
+# Logs（运行/trace 日志，不进版本库）
+logs/
+*.log
+*.jsonl
