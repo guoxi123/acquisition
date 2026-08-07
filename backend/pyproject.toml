@@ -24,3 +24,7 @@ dependencies = [
     "pyjwt>=2.13.0",
     "loguru>=0.7",
 ]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["."]
