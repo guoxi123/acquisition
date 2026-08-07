@@ -641,3 +641,97 @@ async def output_result(state: V2State) -> dict:
         await update_progress(msg_id, "output_result", "分析完成", "done")
 
     return {"final_result": {"sellers": result, "count": len(result), "reply": reply, "quota": quota_meta}}
+
+
+async def classify_intent(state: V2State) -> dict:
+    """前置意图判定：获客(acquisition)→主 agent；其他(chat)→direct_llm 直接回复。"""
+    from typing import Literal
+
+    from pydantic import BaseModel, Field
+
+    from app.agent.orchestrator import _structured_invoke
+
+    class IntentClass(BaseModel):
+        intent: Literal["acquisition", "chat"] = Field(default="acquisition")
+
+    classify_prompt = """判断用户查询的意图类别：
+- acquisition：找亚马逊卖家/获客相关（出现目标市场如“美国站/欧洲站”、品类、找卖家、FBA/FBM、联系方式、中国卖家、采集、评分等）
+- chat：其他（问候、闲聊、问你是谁/能做什么、求助、与找卖家无关）
+只返回 intent 字段（acquisition 或 chat）。"""
+
+    msg_id = state.get("assistant_msg_id")
+    if msg_id:
+        await update_progress(msg_id, "classify_intent", "判断意图…", "running")
+    result = await _structured_invoke(
+        IntentClass,
+        [
+            {"role": "system", "content": classify_prompt},
+            {"role": "user", "content": state.get("user_query", "")},
+        ],
+        "classify_intent",
+    )
+    intent = result.intent if result else "acquisition"  # 解析失败默认走获客主流程
+    if msg_id:
+        await update_progress(msg_id, "classify_intent", f"意图：{'获客' if intent == 'acquisition' else '咨询'}", "done")
+    return {"intent": intent}
+
+
+# 非获客意图直接回复的系统提示词：设定身份/功能/解决问题
+DIRECT_SYSTEM_PROMPT = """你是「获客 Agent」，面向国际货代行业的 AI 亚马逊卖家获客助手。
+
+【你是谁】
+帮货代/销售团队找亚马逊卖家的 AI 助手。
+
+【有什么功能】
+按「目标市场 + 品类」找潜在亚马逊卖家，提供卖家国籍、AI 评分、联系方式（电话/邮箱），自动识别中国卖家并智能排序。
+
+【解决什么问题】
+传统获客靠手动翻 Amazon、逐个搜联系方式，找一个客户要 30 分钟；你让用户一句话锁定目标卖家，把机械搜索交给 AI，销售专注谈单。
+
+【回复原则】
+- 获客类需求：引导用户输入「目标市场 + 品类」，如「美国站卖户外家具的中国卖家」。
+- 其他问题：简短友好作答，并自然引导回获客功能。
+- 回复限 150 字以内。"""
+
+
+async def direct_llm(state: V2State) -> dict:
+    """非获客意图：LLM 按系统提示词直接作答，流式写 content 后收尾，不查库/不采集。"""
+    import time
+    import uuid as _uuid
+
+    from sqlalchemy import update
+
+    from app.agent.llm import get_llm
+    from app.core.db import async_session
+    from app.memory.models import MemoryMessage
+
+    msg_id = state.get("assistant_msg_id")
+    if msg_id:
+        await update_progress(msg_id, "direct_llm", "正在回复…", "running")
+
+    reply = ""
+    if msg_id:
+        llm = get_llm()
+        accumulated = ""
+        last_flush = time.monotonic()
+        async for chunk in llm.astream(
+            [
+                {"role": "system", "content": DIRECT_SYSTEM_PROMPT},
+                {"role": "user", "content": state.get("user_query", "")},
+            ]
+        ):
+            accumulated += chunk.content
+            if time.monotonic() - last_flush > 0.5:
+                async with async_session() as db:
+                    await db.execute(
+                        update(MemoryMessage)
+                        .where(MemoryMessage.message_id == _uuid.UUID(msg_id))
+                        .values(content=accumulated)
+                    )
+                    await db.commit()
+                last_flush = time.monotonic()
+        reply = accumulated
+        await _write_msg(msg_id, content=reply, meta_patch={"done": True})
+    if msg_id:
+        await update_progress(msg_id, "direct_llm", "已回复", "done")
+    return {"final_result": {"reply": reply, "direct": True}}

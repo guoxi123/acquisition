@@ -16,6 +16,8 @@ from app.agent.v2.nodes import (
     acquire_if_needed,
     call_actors,
     check_quota,
+    classify_intent,
+    direct_llm,
     llm_analysis,
     lookup_contacts,
     output_result,
@@ -61,6 +63,8 @@ def build_stream_graph(checkpointer=None):
     无 checkpointer：HITL 靠前端看到 need_input 后重新 POST 补充，每次 ainvoke 用全新 state。
     """
     builder = StateGraph(V2State)
+    builder.add_node("classify_intent", classify_intent)
+    builder.add_node("direct_llm", direct_llm)
     builder.add_node("check_quota", check_quota)
     builder.add_node("parse_intent", parse_intent)
     builder.add_node("query_db", query_db)
@@ -70,7 +74,13 @@ def build_stream_graph(checkpointer=None):
     builder.add_node("score_sellers", score_sellers)
     builder.add_node("output_result", output_result)
 
-    builder.add_edge(START, "check_quota")
+    builder.add_edge(START, "classify_intent")
+    # 前置意图判定：获客 → check_quota 主流程；其他 → direct_llm 直接回复
+    builder.add_conditional_edges(
+        "classify_intent",
+        lambda s: "check_quota" if s.get("intent") == "acquisition" else "direct_llm",
+    )
+    builder.add_edge("direct_llm", END)
     # 配额耗尽 → output_result 提示升级；否则意图识别（else 去向，勿再 add_edge）
     builder.add_conditional_edges(
         "check_quota",

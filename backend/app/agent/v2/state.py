@@ -6,6 +6,7 @@ from typing import TypedDict
 class V2State(TypedDict):
     # 用户输入与解析
     user_query: str
+    intent: str | None  # 前置意图判定：acquisition(获客) / chat(其他)
     marketplace: str | None  # amazon.com / .co.uk ...
     category: str | None
     shipping_type: str | None  # sea / air
