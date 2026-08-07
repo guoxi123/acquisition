@@ -39,6 +39,7 @@ async def _run_stream_graph(
     thread_id: str, assistant_msg_id: str, state: dict
 ):
     """后台跑 stream 图（check_cache → call_actors → llm_analysis → score → output）。"""
+    from app.agent.trace import JsonlTracer
     from app.agent.v2.graph import get_stream_graph
 
     logger.info(f"[stream-graph] 开始: thread={thread_id} category={state.get('category')} market={state.get('marketplace')}")
@@ -46,7 +47,12 @@ async def _run_stream_graph(
     graph = get_stream_graph()
     try:
         await graph.ainvoke(
-            state, config={"configurable": {"thread_id": thread_id}, "recursion_limit": 50}
+            state,
+            config={
+                "configurable": {"thread_id": thread_id},
+                "recursion_limit": 50,
+                "callbacks": [JsonlTracer(thread_id)],  # 本地 trace：LLM 调用写 logs/trace_*.jsonl
+            },
         )
         logger.info(f"[stream-graph] 完成: thread={thread_id}")
     except asyncio.CancelledError:
