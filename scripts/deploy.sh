@@ -77,7 +77,7 @@ ssh -i ${SSH_KEY} "${SERVER_USER}@${SERVER_HOST}" "
   # 检查后端
   echo ''
   echo -n '后端: '
-  if curl -s http://localhost:7788/health | grep -q ok; then
+  if curl -s http://localhost:80/health | grep -q ok; then
     echo '✅ OK'
   else
     echo '❌ 未响应'
@@ -89,7 +89,7 @@ ssh -i ${SSH_KEY} "${SERVER_USER}@${SERVER_HOST}" "
 
   # 检查超管
   echo -n '超管: '
-  TOKEN=\$(curl -s -X POST http://localhost:7788/api/auth/login \
+  TOKEN=\$(curl -s -X POST http://localhost:80/api/auth/login \
     -H 'Content-Type: application/json' \
     -d '{\"username\":\"guoxi\",\"password\":\"guoxi\"}' | grep -o '\"token\"' || echo '')
   if [ -n \"\$TOKEN\" ]; then
