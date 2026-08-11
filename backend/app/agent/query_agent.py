@@ -11,6 +11,7 @@ from langgraph.graph import START, END, StateGraph
 from langgraph.graph.message import MessagesState
 
 from app.agent.llm import get_llm
+from app.core.retry import with_retry
 
 
 def build_query_agent(tools, system_prompt: str):
@@ -21,7 +22,7 @@ def build_query_agent(tools, system_prompt: str):
         # 把 system prompt（含 user_id）前置拼到消息列表
         llm = get_llm(temperature=0).bind_tools(tools)
         messages = [SystemMessage(content=system_prompt)] + list(state["messages"])
-        resp = await llm.ainvoke(messages)
+        resp = await with_retry(lambda: llm.ainvoke(messages), label="query_agent")
         return {"messages": [resp]}
 
     async def call_tools(state):

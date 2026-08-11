@@ -12,6 +12,7 @@ import time
 import httpx
 
 from app.core.config import settings
+from app.core.retry import with_retry
 
 
 async def lookup_company(name: str) -> dict:
@@ -25,7 +26,7 @@ async def lookup_company(name: str) -> dict:
         ).hexdigest().upper()
 
         async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
-            resp = await client.get(
+            resp = await with_retry(lambda: client.get(
                 "https://api.qichacha.com/ECIV4/GetBasicDetailsByName",
                 params={
                     "key": settings.qichacha_app_key,
@@ -36,7 +37,7 @@ async def lookup_company(name: str) -> dict:
                     "Timespan": timespan,
                     "Accept": "application/json",
                 },
-            )
+            ), label="qichacha")
             if "application/json" not in resp.headers.get("content-type", ""):
                 print(f"[qichacha] 非JSON响应 name={name} status={resp.status_code} content-type={resp.headers.get('content-type')}")
                 print(f"[qichacha] body: {resp.text[:2000]}")

@@ -8,6 +8,7 @@ https://open.tianyancha.com/
 import httpx
 
 from app.core.config import settings
+from app.core.retry import with_retry
 
 
 async def lookup_company(name: str) -> dict:
@@ -16,7 +17,7 @@ async def lookup_company(name: str) -> dict:
         return {"phones": [], "emails": []}
     try:
         async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
-            resp = await client.get(
+            resp = await with_retry(lambda: client.get(
                 "https://open.api.tianyancha.com/services/open/ic/baseinfoV2/2.0",
                 params={"keyword": name},
                 headers={
@@ -24,7 +25,7 @@ async def lookup_company(name: str) -> dict:
                     "User-Agent": "Mozilla/5.0 (compatible; TianYanCha-OpenAPI/1.0)",
                     "Accept": "application/json",
                 },
-            )
+            ), label="tianyancha")
             if "application/json" not in resp.headers.get("content-type", ""):
                 print(f"[tianyancha] 非JSON响应 name={name} status={resp.status_code} content-type={resp.headers.get('content-type')}")
                 print(f"[tianyancha] body: {resp.text[:2000]}")

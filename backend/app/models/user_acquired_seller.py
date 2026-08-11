@@ -5,6 +5,7 @@ from sqlalchemy import (
     BigInteger,
     DateTime,
     ForeignKey,
+    Integer,
     String,
     UniqueConstraint,
     Uuid,
@@ -36,3 +37,5 @@ class UserAcquiredSeller(Base):
     acquired_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
     )
+    # 获取时的评分快照（score_sellers 算出，grant 时写入）；查询已获取卖家时直接读这里
+    seller_score: Mapped[int | None] = mapped_column(Integer, nullable=True)

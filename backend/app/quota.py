@@ -57,6 +57,8 @@ async def grant_sellers(
     ).scalars().first()
 
     cand_ids = [c["seller_id"] for c in candidates if c.get("seller_id")]
+    # 评分快照：随发放写入 user_acquired_sellers，查询已获取卖家时直接读
+    score_by_id = {c["seller_id"]: c.get("seller_score") for c in candidates if c.get("seller_id")}
 
     if user is None:
         # 未识别用户（兼容降级）：不计账
@@ -80,7 +82,16 @@ async def grant_sellers(
         if new_ids:
             await db.execute(
                 pg_insert(UserAcquiredSeller)
-                .values([{"user_id": user_id, "seller_id": sid} for sid in new_ids])
+                .values(
+                    [
+                        {
+                            "user_id": user_id,
+                            "seller_id": sid,
+                            "seller_score": score_by_id.get(sid),
+                        }
+                        for sid in new_ids
+                    ]
+                )
                 .on_conflict_do_nothing(
                     index_elements=[UserAcquiredSeller.user_id, UserAcquiredSeller.seller_id]
                 )
@@ -114,7 +125,16 @@ async def grant_sellers(
     if granted_new:
         await db.execute(
             pg_insert(UserAcquiredSeller)
-            .values([{"user_id": user_id, "seller_id": sid} for sid in granted_new])
+            .values(
+                [
+                    {
+                        "user_id": user_id,
+                        "seller_id": sid,
+                        "seller_score": score_by_id.get(sid),
+                    }
+                    for sid in granted_new
+                ]
+            )
             .on_conflict_do_nothing(
                 index_elements=[UserAcquiredSeller.user_id, UserAcquiredSeller.seller_id]
             )

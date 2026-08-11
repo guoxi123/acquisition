@@ -3,6 +3,8 @@
 import json
 import logging
 
+from app.core.retry import with_retry
+
 logger = logging.getLogger(__name__)
 
 
@@ -42,7 +44,7 @@ async def _structured_invoke(schema, messages: list, label: str):
     llm = get_llm()
     for attempt in range(2):
         try:
-            resp = await llm.ainvoke(full)
+            resp = await with_retry(lambda: llm.ainvoke(full), label=label)
             content = getattr(resp, "content", "") or ""
             json_str = _extract_json(content)
             if json_str:

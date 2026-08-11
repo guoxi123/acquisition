@@ -8,6 +8,8 @@ from urllib.parse import unquote, urlparse
 
 import httpx
 
+from app.core.retry import with_retry
+
 # TLD 必须 ≥2 位字母，排除 core@2.5.3 这类版本号
 EMAIL_RE = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z]{2,}")
 PHONE_RE = re.compile(r"\+?\d[\d\s\-().]{7,}\d")
@@ -43,8 +45,9 @@ async def find_website(brand: str) -> str | None:
     q = f"{brand} official website"
     async with httpx.AsyncClient(headers=HEADERS, timeout=15, follow_redirects=True) as client:
         try:
-            r = await client.get(
-                "https://html.duckduckgo.com/html/", params={"q": q}
+            r = await with_retry(
+                lambda: client.get("https://html.duckduckgo.com/html/", params={"q": q}),
+                label="ddg_search",
             )
         except Exception:
             return None
@@ -60,7 +63,7 @@ async def _extract_from(client: httpx.AsyncClient, url: str) -> tuple[set[str], 
     emails: set[str] = set()
     phones: set[str] = set()
     try:
-        r = await client.get(url)
+        r = await with_retry(lambda: client.get(url), label="website_extract")
     except Exception:
         return emails, phones
     for e in EMAIL_RE.findall(r.text):
