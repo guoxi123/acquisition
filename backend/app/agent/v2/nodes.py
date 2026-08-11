@@ -4,6 +4,7 @@ call_actors(库不够则采集一轮) + llm_analysis/score_sellers/lookup_contac
 import uuid
 
 from app.agent.v2.state import V2State
+from app.core.retry import with_retry
 from app.utils.logger import logger
 
 # marketplace 域名 → junglee country
@@ -396,7 +397,7 @@ async def llm_analysis(state: V2State) -> dict:
             "重点：货量潜力、是否中国卖家（近距离优势）、活跃度。限 80 字。"
         )
         try:
-            resp = await llm.ainvoke(prompt)
+            resp = await with_retry(lambda: llm.ainvoke(prompt), label="llm_analysis")
             s["analysis"] = str(resp.content)[:200]
         except Exception:
             s["analysis"] = ""
@@ -681,18 +682,41 @@ async def classify_intent(state: V2State) -> dict:
 DIRECT_SYSTEM_PROMPT = """你是「获客 Agent」，面向国际货代行业的 AI 亚马逊卖家获客助手。
 
 【你是谁】
-帮货代/销售团队找亚马逊卖家的 AI 助手。
+帮货代/销售团队找新客户、管理已获取客户的 AI 助手。
 
 【有什么功能】
-按「目标市场 + 品类」找潜在亚马逊卖家，提供卖家国籍、AI 评分、联系方式（电话/邮箱），自动识别中国卖家并智能排序。
+1. 找新卖家：按「目标市场 + 品类」找潜在亚马逊卖家，提供卖家国籍、AI 评分、联系方式（电话/邮箱），自动识别中国卖家并智能排序。
+2. 查已获取的卖家：查看 / 筛选你之前获取过的卖家（按国籍、评分、品类等），如「我获取的中国卖家」「我获取的高分卖家」。
 
 【解决什么问题】
 传统获客靠手动翻 Amazon、逐个搜联系方式，找一个客户要 30 分钟；你让用户一句话锁定目标卖家，把机械搜索交给 AI，销售专注谈单。
 
 【回复原则】
-- 获客类需求：引导用户输入「目标市场 + 品类」，如「美国站卖户外家具的中国卖家」。
-- 其他问题：简短友好作答，并自然引导回获客功能。
+- 找新卖家：引导用户输入「目标市场 + 品类」，如「美国站卖户外家具的中国卖家」。
+- 查已获取的卖家：引导用户说「我的卖家」「我获取的中国卖家」等。
+- 信息不全时（目标市场 / 品类缺失）你会主动追问，不瞎猜。
+- 其他问题：简短友好作答，并自然引导回上述功能。
 - 回复限 150 字以内。"""
+
+
+async def _history_messages(session_id: str | None) -> tuple[str, list]:
+    """取会话历史 → (摘要文本, recent 消息列表)。
+    摘要合并成一段文本（拼进 system prompt）；recent 转 Human/AIMessage（末尾含当前 user_query）。"""
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    from app.memory import agent as memory_agent
+
+    if not session_id:
+        return "", []
+    ctx = await memory_agent.get_context(session_id)
+    summaries = "\n\n".join(s["content"] for s in ctx["summaries"]) if ctx["summaries"] else ""
+    msgs: list = []
+    for m in ctx["recent_messages"]:
+        if m["role"] == "user":
+            msgs.append(HumanMessage(content=m["content"]))
+        elif m["role"] == "assistant" and m["content"]:  # 排除空占位（当前 assistant_msg_id 还没写 content）
+            msgs.append(AIMessage(content=m["content"]))
+    return summaries, msgs
 
 
 async def direct_llm(state: V2State) -> dict:
@@ -712,15 +736,20 @@ async def direct_llm(state: V2State) -> dict:
 
     reply = ""
     if msg_id:
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        summaries, history = await _history_messages(state.get("session_id"))
+        sys_content = DIRECT_SYSTEM_PROMPT + (f"\n\n【之前对话摘要】\n{summaries}" if summaries else "")
+        # history 末尾含当前 user_query（chat_stream 已 add_message）；无历史则补一条
+        messages = (
+            [SystemMessage(content=sys_content)] + history
+            if history
+            else [SystemMessage(content=sys_content), HumanMessage(content=state.get("user_query", ""))]
+        )
         llm = get_llm()
         accumulated = ""
         last_flush = time.monotonic()
-        async for chunk in llm.astream(
-            [
-                {"role": "system", "content": DIRECT_SYSTEM_PROMPT},
-                {"role": "user", "content": state.get("user_query", "")},
-            ]
-        ):
+        async for chunk in llm.astream(messages):
             accumulated += chunk.content
             if time.monotonic() - last_flush > 0.5:
                 async with async_session() as db:
@@ -759,10 +788,12 @@ async def query_agent_node(state: V2State) -> dict:
         "若用户其实想找【新】卖家（需要采集），提示其改用「目标市场+品类」（如「美国站卖户外家具的中国卖家」）发起获客查询。"
     )
     # 手写 LangGraph ReAct 子图（agent ⟷ tools 循环），不依赖 prebuilt
-    subgraph = build_query_agent(ALL_TOOLS, system_prompt)
-    result = await subgraph.ainvoke(
-        {"messages": [HumanMessage(content=state.get("user_query", ""))]}
-    )
+    summaries, history = await _history_messages(state.get("session_id"))
+    sys_prompt = system_prompt + (f"\n\n【之前对话摘要】\n{summaries}" if summaries else "")
+    subgraph = build_query_agent(ALL_TOOLS, sys_prompt)
+    # history 末尾含当前 user_query；无历史（session_id 缺失）则补一条
+    msgs = history if history else [HumanMessage(content=state.get("user_query", ""))]
+    result = await subgraph.ainvoke({"messages": msgs})
 
     messages = result.get("messages", [])
     # 最终回答 = 最后一条无 tool_calls 的 AI 消息；sellers 从 tool 消息提取

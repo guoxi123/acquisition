@@ -64,7 +64,9 @@ INTENT_PROMPT = """你是货代获客的意图解析助手。从用户自然语�
 - “德国站卖咖啡机的卖家” → marketplace=amazon.de, category=coffee machine
 - “卖杯子” → marketplace=None, category=cups（缺市场，need_confirm）
 
-marketplace 和 category 是必要字段，任一为 None 则 need_confirm=True，并在 missing 列出缺失项中文名（“目标市场”“产品品类”）。其余字段缺失不算 need_confirm。"""
+marketplace 和 category 是必要字段，任一为 None 则 need_confirm=True，并在 missing 列出缺失项中文名（“目标市场”“产品品类”）。
+若用户省略了 marketplace/category，但【历史对话/摘要里明确提过】（如之前一直查美国站），可从历史推断补全、不标 need_confirm。
+注意：当前输入明确指定的字段优先于历史（用户这次说“英国站”就尊重当前，别从历史覆盖）。其余字段缺失不算 need_confirm。"""
 
 
 async def parse_intent(state: V2State) -> dict:
@@ -75,14 +77,26 @@ async def parse_intent(state: V2State) -> dict:
     if msg_id:
         await update_progress(msg_id, "parse_intent", "正在解析意图…", "running")
 
-    parsed = await _structured_invoke(
-        ParsedIntent,
-        [
-            {"role": "system", "content": INTENT_PROMPT},
-            {"role": "user", "content": state.get("user_query", "")},
-        ],
-        "parse_intent",
-    )
+    # 结合会话历史：续问时从上下文推断省略的字段（如之前的市场/品类），减少不必要的 HITL 追问
+    from app.memory import agent as memory_agent
+
+    sys_content = INTENT_PROMPT
+    history_msgs: list = []
+    if state.get("session_id"):
+        ctx = await memory_agent.get_context(state["session_id"])
+        if ctx["summaries"]:
+            sys_content += "\n\n【之前对话摘要】\n" + "\n\n".join(s["content"] for s in ctx["summaries"])
+        for m in ctx["recent_messages"]:
+            if m["role"] == "user":
+                history_msgs.append({"role": "user", "content": m["content"]})
+            elif m["role"] == "assistant" and m["content"]:  # 过滤空占位
+                history_msgs.append({"role": "assistant", "content": m["content"]})
+    # history 末条含当前 user_query；无历史（session_id 缺失）则补一条
+    base_msgs = [{"role": "system", "content": sys_content}] + history_msgs
+    if not history_msgs:
+        base_msgs.append({"role": "user", "content": state.get("user_query", "")})
+
+    parsed = await _structured_invoke(ParsedIntent, base_msgs, "parse_intent")
 
     # 补充重跑时 endpoint 注入的 marketplace/category 优先（用户已确认）
     injected_marketplace = state.get("marketplace")

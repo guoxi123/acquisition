@@ -35,18 +35,44 @@ async def add_message_and_maybe_compress(
     return seq, version
 
 
-async def get_context(session_id: uuid.UUID) -> dict:
-    """三层上下文：压缩摘要（全部版本）+ 最近 N 条未压缩原文。"""
+async def get_context(session_id: uuid.UUID, max_summaries: int = 5) -> dict:
+    """三层上下文：压缩摘要（最近 max_summaries 个）+ 最近 N 条未压缩原文。
+    限制 summary 数量，防止长对话下摘要线性累积爆 token。"""
+    from app.memory.models import CompressionStrategy, CompressionVersionStatus
+
     async with async_session() as db:
-        versions = list(
+        # layer_3：全局摘要（hierarchical），最近 1 个
+        l3 = list(
             (
                 await db.execute(
                     select(MemoryCompressionVersion)
-                    .where(MemoryCompressionVersion.session_id == session_id)
-                    .order_by(MemoryCompressionVersion.version_number)
+                    .where(
+                        MemoryCompressionVersion.session_id == session_id,
+                        MemoryCompressionVersion.strategy == CompressionStrategy.hierarchical,
+                        MemoryCompressionVersion.status == CompressionVersionStatus.active,
+                    )
+                    .order_by(MemoryCompressionVersion.version_number.desc())
+                    .limit(1)
                 )
             ).scalars().all()
         )
+        # layer_2：近期摘要（summary + active，未并入 layer_3），最近 max_summaries 个
+        l2 = list(
+            (
+                await db.execute(
+                    select(MemoryCompressionVersion)
+                    .where(
+                        MemoryCompressionVersion.session_id == session_id,
+                        MemoryCompressionVersion.strategy == CompressionStrategy.summary,
+                        MemoryCompressionVersion.status == CompressionVersionStatus.active,
+                    )
+                    .order_by(MemoryCompressionVersion.version_number.desc())
+                    .limit(max_summaries)
+                )
+            ).scalars().all()
+        )
+        l2.reverse()  # 恢复正序（早期 → 近期）
+    versions = l3 + l2  # 全局摘要在前，近期摘要在后
     # 全部未压缩消息都作为"近期原文"给 LLM（压缩保证未压缩数受控：触发阈值16→压到4+新增）
     recent = await storage.get_messages(session_id, include_compressed=False)
     return {

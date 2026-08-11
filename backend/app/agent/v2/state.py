@@ -23,6 +23,7 @@ class V2State(TypedDict):
     products: list[dict]
     sellers: list[dict]
     scored_sellers: list[dict]
+    session_id: str | None  # 会话 ID（取历史/摘要用，chat_stream 注入 thread_id）
     assistant_msg_id: str  # 流式回复的占位消息 ID（output_result 边生成边 UPDATE content）
     final_result: dict
     errors: list[str]

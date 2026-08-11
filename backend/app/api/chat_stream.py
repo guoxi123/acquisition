@@ -117,6 +117,7 @@ async def chat_stream(
 
     # 配额 / 意图 / HITL 全交给图（check_quota → parse_intent → …）；endpoint 只注入补充值
     state = {
+        "session_id": thread_id,
         "user_query": req.query,
         "marketplace": req.marketplace,
         "category": req.category,

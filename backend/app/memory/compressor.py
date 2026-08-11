@@ -101,9 +101,95 @@ async def compress(session_id) -> MemoryCompressionVersion | None:
         return version
 
 
-async def maybe_compress(session_id):
-    """检查阈值 + 压缩（chat 每条消息后调）。返回版本或 None。"""
-    if await check_compression_needed(session_id):
-        logger.info(f"[compressor] 触发压缩: session={session_id}")
-        return await compress(session_id)
+LAYER3_TRIGGER = 3  # layer_2 active 数达此值 → 合并成 layer_3
+LAYER3_MERGE_N = 3  # 每次合并最老的几个 layer_2
+
+
+async def compress_layer_3(session_id) -> MemoryCompressionVersion | None:
+    """layer_2 摘要过多 → 合并最老的几个成 layer_3（更高层全局摘要），收敛 token。
+    layer_3 用 strategy=hierarchical 标记；被合并的 layer_2 标 archived（get_context 不再取）。"""
+    from app.agent.llm import get_llm
+
+    async with async_session() as db:
+        l2_versions = list(
+            (
+                await db.execute(
+                    select(MemoryCompressionVersion)
+                    .where(
+                        MemoryCompressionVersion.session_id == session_id,
+                        MemoryCompressionVersion.strategy == CompressionStrategy.summary,
+                        MemoryCompressionVersion.status == CompressionVersionStatus.active,
+                    )
+                    .order_by(MemoryCompressionVersion.version_number)
+                    .limit(LAYER3_MERGE_N)
+                )
+            ).scalars().all()
+        )
+    if len(l2_versions) < LAYER3_MERGE_N:
+        return None  # 不够合并
+
+    summaries_text = "\n\n".join(f"[摘要{v.version_number}] {v.compressed_content}" for v in l2_versions)
+    llm = get_llm()
+    resp = await llm.ainvoke(
+        "把以下几段对话摘要合并成一个更高层的全局摘要"
+        "（保留主线：用户目标/已确认方案/关键结论；丢弃已过时的细节），限 300 字：\n" + summaries_text
+    )
+    layer3 = str(resp.content)[:800]
+
+    async with async_session() as db:
+        max_vn = (
+            await db.execute(
+                select(func.max(MemoryCompressionVersion.version_number)).where(
+                    MemoryCompressionVersion.session_id == session_id
+                )
+            )
+        ).scalar() or 0
+        version = MemoryCompressionVersion(
+            session_id=session_id,
+            version_number=max_vn + 1,
+            strategy=CompressionStrategy.hierarchical,  # 标记 layer_3
+            start_sequence_number=l2_versions[0].start_sequence_number,
+            end_sequence_number=l2_versions[-1].end_sequence_number,
+            compressed_content=layer3,
+            status=CompressionVersionStatus.active,
+        )
+        db.add(version)
+        for v in l2_versions:
+            await db.execute(
+                update(MemoryCompressionVersion)
+                .where(MemoryCompressionVersion.version_id == v.version_id)
+                .values(status=CompressionVersionStatus.archived)  # 被合并，不再单独取
+            )
+        await db.commit()
+    logger.info(f"[compressor] layer_3 合并完成: session={session_id} 合并 {len(l2_versions)} 个 layer_2")
+    return version
+
+
+async def maybe_compress_layer_3(session_id):
+    """layer_2 active 数 ≥ LAYER3_TRIGGER → 合并最老的几个成 layer_3。"""
+    async with async_session() as db:
+        count = (
+            await db.execute(
+                select(func.count())
+                .select_from(MemoryCompressionVersion)
+                .where(
+                    MemoryCompressionVersion.session_id == session_id,
+                    MemoryCompressionVersion.strategy == CompressionStrategy.summary,
+                    MemoryCompressionVersion.status == CompressionVersionStatus.active,
+                )
+            )
+        ).scalar() or 0
+    if count >= LAYER3_TRIGGER:
+        return await compress_layer_3(session_id)
     return None
+
+
+async def maybe_compress(session_id):
+    """检查阈值 + 压缩（chat 每条消息后调）。两级：layer_2（原文→摘要）+ layer_3（摘要过多→合并）。"""
+    version = None
+    if await check_compression_needed(session_id):
+        logger.info(f"[compressor] 触发 layer_2 压缩: session={session_id}")
+        version = await compress(session_id)
+    # layer_2 累积过多 → 合并成 layer_3，收敛 token
+    l3 = await maybe_compress_layer_3(session_id)
+    return l3 or version
