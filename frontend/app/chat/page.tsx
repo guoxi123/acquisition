@@ -297,7 +297,7 @@ export default function ChatPage() {
               const now = new Date();
               const buckets: Record<string, ChatSession[]> = { 今天: [], 昨天: [], "7天内": [], "30天内": [], 更早: [] };
               for (const s of sessions) {
-                const d = new Date(s.created_at);
+                const d = new Date(s.created_at); // 后端返回的是 updated_at（最近活跃时间）
                 const diffDays = (now.getTime() - d.getTime()) / 86400000;
                 if (d.toDateString() === now.toDateString()) buckets["今天"].push(s);
                 else if (diffDays < 2) buckets["昨天"].push(s);

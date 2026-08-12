@@ -34,7 +34,7 @@ async def list_sessions(user: User = Depends(get_current_user)) -> dict:
                 await db.execute(
                     select(MemorySession)
                     .where(MemorySession.user_id == user.id)
-                    .order_by(MemorySession.created_at.desc())
+                    .order_by(MemorySession.updated_at.desc())
                 )
             ).scalars().all()
         )
@@ -54,7 +54,7 @@ async def list_sessions(user: User = Depends(get_current_user)) -> dict:
             result.append(
                 {
                     "session_id": str(s.session_id),
-                    "created_at": s.created_at.isoformat(),
+                    "created_at": (s.updated_at or s.created_at).isoformat(),
                     "total_messages": s.total_messages,
                     "title": s.title or (first_user_msg.content[:40] if first_user_msg else "新会话"),
                 }
