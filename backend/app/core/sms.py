@@ -7,6 +7,7 @@ RPC V1 + HMAC-SHA1 签名，免装 SDK。凭证未配置时走 mock（logger 打
 import base64
 import hashlib
 import hmac
+import json
 import secrets
 import urllib.parse
 from datetime import datetime, timezone
@@ -33,7 +34,7 @@ def _sign(params: dict, access_key_secret: str) -> str:
     canonicalized = "&".join(
         f"{_percent_encode(k)}={_percent_encode(v)}" for k, v in sorted_items
     )
-    string_to_sign = "GET&" + _percent_encode("/") + "&" + _percent_encode(canonicalized)
+    string_to_sign = "POST&" + _percent_encode("/") + "&" + _percent_encode(canonicalized)
     digest = hmac.new(
         (access_key_secret + "&").encode(),
         string_to_sign.encode(),
@@ -68,6 +69,7 @@ async def send_sms_code(phone: str, code: str) -> dict:
         "PhoneNumber": phone,
         "SignName": settings.aliyun_sms_sign_name,
         "TemplateCode": settings.aliyun_sms_template_code,
+        "TemplateParam": json.dumps({"code": code, "min": "5"}, ensure_ascii=False),
         "VerifyCode": code,
     }
     params["Signature"] = _sign(params, settings.aliyun_sms_access_key_secret)

@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     enrich_min_reviews: int = 100
 
     # V2 采集循环参数
-    fetch_batch_size: int = 1000  # 每轮抓取产品数（harness 循环累积填满配额）
+    fetch_batch_size: int = 50 # 每轮抓取产品数（harness 循环累积填满配额）
     acquired_admin_max: int = 50  # 超管每次查询返回的卖家数（超管不限额度，走相同流程）
     max_fetch_rounds: int = 3    # 库不够时采集最大轮次
 
@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     aliyun_sms_access_key_id: str = ""
     aliyun_sms_access_key_secret: str = ""
     aliyun_sms_sign_name: str = ""
-    aliyun_sms_template_code: str = "100001"
+    aliyun_sms_template_code: str = ""
 
     @property
     def cors_origins_list(self) -> list[str]:

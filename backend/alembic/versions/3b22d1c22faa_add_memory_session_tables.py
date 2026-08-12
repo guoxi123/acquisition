@@ -68,7 +68,7 @@ def upgrade() -> None:
     sa.Column('map_id', sa.Uuid(), nullable=False),
     sa.Column('message_id', sa.Uuid(), nullable=False),
     sa.Column('version_id', sa.Uuid(), nullable=False),
-    sa.Column('message_role_in_compression', sa.Enum('source', 'reference', 'context', name='messageroleincompression'), nullable=False),
+    sa.Column('message_role_in_compression', sa.Enum('source', 'reference', 'context', name='memory_message_role_in_compression'), nullable=False),
     sa.Column('relevance_score', sa.Float(), nullable=True),
     sa.ForeignKeyConstraint(['message_id'], ['memory_messages.message_id'], ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['version_id'], ['memory_compression_versions.version_id'], ondelete='CASCADE'),

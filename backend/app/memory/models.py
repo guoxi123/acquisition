@@ -161,6 +161,7 @@ class MemoryMessageCompressionMap(Base):
         index=True,
     )
     message_role_in_compression: Mapped[MessageRoleInCompression] = mapped_column(
+        Enum(MessageRoleInCompression, name="memory_message_role_in_compression"),
         default=MessageRoleInCompression.source
     )
     relevance_score: Mapped[float | None] = mapped_column(Float, nullable=True)
