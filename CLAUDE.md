@@ -49,3 +49,77 @@
 > 见效的标志：diff 里没有多余改动、不再因过度复杂返工、澄清发生在动手之前而非犯错之后。
 
 ---
+
+## 二、测试纪律（强制）
+
+**改/加任何后端功能，必须同步写或改对应的 pytest 测试（backend/tests/），改完跑全量 pytest，通过才报告完成。**
+
+- **写代码时同步写测试**：不要"先写完所有功能最后补测试"。一个功能改完，对应的 `test_xxx.py` 也要写好。
+- **改完立刻跑**：`cd backend && .venv/bin/python -m pytest tests/ -v`。全量 61+ 测试 ~10 秒，秒级反馈。
+- **测试失败如实说**：不粉饰、不跳过、不改测试迁就 bug。失败 → 修代码 → 再跑 → 直到通过。
+- **琐碎例外**：改错字、文案、注释、CSS 类名等不影响逻辑的改动，可跳过测试。
+- **新功能模板**：纯逻辑写单元测试（monkeypatch mock 外部）；涉及 DB 写集成测试（临时用户 + 前缀 sellers + 跑完清理）。
+
+---
+
+## 二、项目结构
+
+```
+acquisition/
+├── backend/                      FastAPI 后端（Python 3.12）
+│   ├── app/
+│   │   ├── agent/                Agent 核心
+│   │   │   ├── v2/               主获客图（graph.py / state.py / nodes.py / intent.py）
+│   │   │   ├── skills.py         query_agent 工具注册表（@tool 函数 + ALL_TOOLS）
+│   │   │   ├── query_agent.py    手写 LangGraph ReAct 子图（agent ⟷ tools 循环）
+│   │   │   ├── orchestrator.py   LLM 结构化输出（_structured_invoke）
+│   │   │   ├── llm.py            LLM 工厂（ChatOpenAI / DeepSeek）
+│   │   │   └── trace.py          轻量本地 trace（JsonlTracer callback）
+│   │   ├── api/                  FastAPI 路由
+│   │   │   ├── chat_stream.py    流式对话（POST /stream + SSE events + cancel）
+│   │   │   └── chat_sessions.py  会话 CRUD（列表 / 删除 / 重命名）
+│   │   ├── auth/                 JWT 认证（注册 / 登录 / 手机短信验证码）
+│   │   ├── core/                 基础设施
+│   │   │   ├── config.py         pydantic-settings（读 .env）
+│   │   │   ├── db.py             async SQLAlchemy session
+│   │   │   ├── cache.py          Redis 缓存
+│   │   │   ├── retry.py          瞬时/永久错误分类 + 重试（with_retry）
+│   │   │   ├── sms.py            阿里云 PNVS 短信验证码
+│   │   │   └── geo.py            地址 → 国籍推断
+│   │   ├── memory/               会话记忆（两级压缩 + 可追溯）
+│   │   │   ├── agent.py          get_context（分层取）+ add_message_and_maybe_compress
+│   │   │   ├── compressor.py     layer_2 原文→摘要 + layer_3 摘要→全局合并
+│   │   │   ├── models.py         4 表（sessions / messages / compression_versions / map）
+│   │   │   └── storage.py        消息 CRUD + 未压缩查询
+│   │   ├── models/               SQLAlchemy ORM（Seller / Product / User / UserAcquiredSeller / …）
+│   │   ├── providers/            外部数据源 adapter
+│   │   │   ├── adapters/         Apify actor（amazon_products / seller / junglee / google）
+│   │   │   ├── apify_provider.py Apify 统一接口（批量采集 + 缓存）
+│   │   │   ├── tianyancha.py     天眼查联系方式
+│   │   │   └── qichacha.py       企查查联系方式
+│   │   ├── quota.py              配额服务（grant_sellers 行锁 + 永久去重）
+│   │   └── main.py               FastAPI 入口（router 注册 + lifespan）
+│   ├── alembic/                  数据库迁移（线性链，head = b3c4d5e6f7a8）
+│   ├── tests/                    pytest（agent_eval / agent / core / 流程测试）
+│   ├── entrypoint.sh             Docker 容器入口（alembic upgrade head + uvicorn）
+│   ├── pyproject.toml            依赖 + pytest 配置（asyncio_mode=auto）
+│   └── requirements.txt
+├── frontend/                     Next.js 15（App Router）+ React 19 + TypeScript
+│   ├── app/                      页面（首页 / login / register / chat）
+│   ├── components/               React 组件（SellerTable 分页表格）
+│   └── lib/api.ts                API 客户端（auth + streamChat + connectStream SSE + sessions）
+├── docs/                         技术文档（踩坑三部曲 + 架构 + 运维 + 记忆 + 前端 + 集成）
+├── scripts/                      deploy.sh（tar+ssh 一键部署）+ start.sh（本地启动）
+├── nginx/                        Nginx 反代配置
+├── docker-compose.prod.yml       生产编排（pg / redis / backend / frontend / nginx）
+├── docker-compose.yml            本地编排
+└── CLAUDE.md                     项目指引（本文件）
+```
+
+### 关键约定
+
+- **后端**：`app/` 按职责分目录。改 Agent 图 → `agent/v2/`；加查询工具 → `agent/skills.py` + `ALL_TOOLS`；改 API → `api/`；改记忆 → `memory/`。
+- **前端**：App Router。页面在 `app/`，复用组件在 `components/`，API 调用在 `lib/api.ts`（唯一出口）。
+- **数据库**：改 schema 先写 alembic migration（`alembic revision --autogenerate`），不要手动改表。
+- **测试**：`tests/agent_eval/` 跑真实 LLM（慢，手动/定期跑）；`tests/agent/` + `tests/core/` 是纯单测（快，可 CI）。
+- **部署**：`scripts/deploy.sh` tar 同步代码 → SSH docker compose up --build → 健康检查。
