@@ -38,6 +38,32 @@ async def _write_msg(msg_id: str, *, content: str | None = None, meta_patch: dic
         await db.commit()
 
 
+class CancelledByUser(Exception):
+    """协作式取消：用户点取消 → cancel 写 DB cancelled=True → 节点 check_cancel 检测到后 raise，图立即停止。
+    跨 worker 生效（靠 DB 共享标志，不依赖进程内 task）。"""
+    pass
+
+
+async def check_cancel(msg_id: str) -> None:
+    """节点开头调用：读 DB meta.cancelled，命中则 raise CancelledByUser。
+    生产级标准做法：不依赖进程内 task 对象，任意 worker 都能取消任意 worker 的图。"""
+    if not msg_id:
+        return
+    from app.core.db import async_session
+    from app.memory.models import MemoryMessage
+
+    try:
+        async with async_session() as db:
+            msg = await db.get(MemoryMessage, uuid.UUID(msg_id))
+            if msg and (msg.meta or {}).get("cancelled"):
+                logger.info(f"[check_cancel] 检测到取消信号，停止执行: msg={msg_id}")
+                raise CancelledByUser()
+    except CancelledByUser:
+        raise
+    except Exception:
+        pass  # DB 查询失败不阻塞主流程
+
+
 async def update_progress(msg_id: str, step: str, message: str, status: str = "done"):
     """更新 assistant 消息的 meta.progress（追加一条进度，供 SSE 推送给前端）。
 
@@ -109,6 +135,8 @@ async def check_quota(state: V2State) -> dict:
 async def query_db(state: V2State) -> dict:
     """查 sellers 表：marketplace + 品类模糊匹配 + 该用户未获取过，limit=remaining。
     唯一写 state["sellers"] 的节点（覆盖语义；call_actors 不返回 sellers）。"""
+    msg_id = state.get("assistant_msg_id")
+    await check_cancel(msg_id)  # 协作式取消：用户点取消 → 本节点立即退出
     from sqlalchemy import func, select
 
     from app.core.db import async_session
@@ -180,8 +208,9 @@ async def query_db(state: V2State) -> dict:
 
 
 async def call_actors(state: V2State) -> dict:
-    """采集工具（harness 调用）：junglee 抓一批产品 → 聚合卖家 → 对差集 fetch_seller_profile+国籍 → upsert。
-    不查联系方式（由 acquire_if_needed 调 lookup_contacts_for）；return sellers 供 harness 查联系方式。"""
+    """采集工具：junglee 抓一批产品 → 聚合卖家 → 对差集 fetch_seller_profiles+国籍 → upsert。"""
+    msg_id = state.get("assistant_msg_id")
+    await check_cancel(msg_id)  # 协作式取消：每轮采集前检查，命中则 raise CancelledByUser
     import asyncio
 
     from sqlalchemy import func, select
@@ -354,6 +383,8 @@ async def call_actors(state: V2State) -> dict:
 async def acquire_if_needed(state: V2State) -> dict:
     """判断节点：评估库存是否够配额（够 / 达 max_rounds / 上一轮 0 新增）。
     路由由其后条件边决定：够 → llm_analysis，不够 → call_actors 子 agent。"""
+    msg_id = state.get("assistant_msg_id")
+    await check_cancel(msg_id)  # 协作式取消：循环每轮经过此节点，检查到取消则 raise
     target = state.get("target") or state.get("remaining") or 0
     sellers = state.get("sellers") or []
     fetch_round = state.get("fetch_round") or 0

@@ -22,11 +22,6 @@ from app.utils.logger import logger
 
 router = APIRouter(prefix="/api/chat/stream", tags=["chat-stream"])
 
-# thread_id → (asyncio.Task, assistant_msg_id) 注册表，用于取消
-_tasks: dict[str, tuple[asyncio.Task, str]] = {}
-# thread_id → 取消标志
-_cancelled: dict[str, bool] = {}
-
 
 class StreamRequest(BaseModel):
     query: str
@@ -56,32 +51,25 @@ async def _run_stream_graph(
         )
         logger.info(f"[stream-graph] 完成: thread={thread_id}")
     except asyncio.CancelledError:
-        logger.info(f"[stream-graph] 被用户取消: thread={thread_id}")
-        # 取消时保留 output_result 已写入的（已授权）sellers，只翻 done/cancelled 标志。
-        # 不能用 state["scored_sellers"]：流式图无 checkpointer，节点返回值不回写调用方 dict，
-        # 会读到初始空值，既覆盖掉已流式写入的 sellers（既有 bug），也会泄露未授权卖家。
-        async with async_session() as db:
-            msg = await db.get(MemoryMessage, uuid.UUID(assistant_msg_id))
-            cur = dict((msg.meta or {}) if msg else {})
-            cur.update({"done": True, "cancelled": True})
-            await db.execute(
-                MemoryMessage.__table__.update()
-                .where(MemoryMessage.message_id == uuid.UUID(assistant_msg_id))
-                .values(meta=cur)
-            )
-            await db.commit()
-    except Exception as e:
-        logger.error(f"[stream-graph] 失败: thread={thread_id} error={e}")
-        # 合并写：保留已写入的 progress，只追加 error/done（避免整体覆盖丢进度）
+        logger.info(f"[stream-graph] 进程级取消: thread={thread_id}")
+        # 保留已写入的 sellers，只翻 done/cancelled（流式图无 checkpointer，不能用 state）
         from app.agent.v2.nodes import _write_msg
-        await _write_msg(
-            assistant_msg_id,
-            content=f"（出错：{e}）",
-            meta_patch={"sellers": [], "done": True, "error": str(e)},
-        )
+        await _write_msg(assistant_msg_id, meta_patch={"done": True, "cancelled": True})
+    except Exception as e:
+        # CancelledByUser 是 Exception 子类，catch 在这里统一处理
+        from app.agent.v2.nodes import CancelledByUser, _write_msg
+        if isinstance(e, CancelledByUser):
+            logger.info(f"[stream-graph] 用户协作式取消: thread={thread_id}")
+            await _write_msg(assistant_msg_id, meta_patch={"done": True, "cancelled": True})
+        else:
+            logger.error(f"[stream-graph] 失败: thread={thread_id} error={e}")
+            await _write_msg(
+                assistant_msg_id,
+                content=f"（出错：{e}）",
+                meta_patch={"sellers": [], "done": True, "error": str(e)},
+            )
     finally:
-        _tasks.pop(thread_id, None)
-        _cancelled.pop(thread_id, None)
+        pass
 
 
 @router.post("")
@@ -141,7 +129,6 @@ async def chat_stream(
     task = asyncio.create_task(
         _run_stream_graph(thread_id, str(assistant_msg_id), state)
     )
-    _tasks[thread_id] = (task, str(assistant_msg_id))
 
     return {
         "status": "streaming",
@@ -154,28 +141,40 @@ async def chat_stream(
 async def cancel_stream(
     thread_id: str, user: User = Depends(get_current_user)
 ) -> dict:
-    """取消正在运行的图，已输出数据保留在 DB 中。"""
+    """取消正在运行的图。多 worker 安全：不依赖进程内 _tasks，先写 DB 标志（跨 worker），
+    再对本 worker 的 task（若有）额外 cancel。"""
+    from sqlalchemy import select
+
+    from app.agent.v2.nodes import _write_msg
+    from app.memory.models import MemoryMessage, MessageRole
+
+    sid = uuid.UUID(thread_id)
     async with async_session() as db:
-        session = await db.get(MemorySession, uuid.UUID(thread_id))
+        session = await db.get(MemorySession, sid)
     if session is None:
         raise HTTPException(404, "会话不存在")
     if session.user_id != user.id and not user.is_super_admin:
         raise HTTPException(403, "无权访问此会话")
 
-    task_info = _tasks.get(thread_id)
-    if task_info is None:
-        return {"status": "not_found", "message": "没有正在运行的任务"}
-
-    task, assistant_msg_id = task_info
-    if task.done():
+    # 1) 从 DB 找该会话最新 assistant 消息（跨 worker：不依赖 _tasks）
+    async with async_session() as db:
+        msg = (
+            await db.execute(
+                select(MemoryMessage)
+                .where(
+                    MemoryMessage.session_id == sid,
+                    MemoryMessage.role == MessageRole.assistant,
+                )
+                .order_by(MemoryMessage.sequence_number.desc())
+                .limit(1)
+            )
+        ).scalars().first()
+    if msg is None or (msg.meta or {}).get("done"):
         return {"status": "already_done"}
 
-    # task 还在跑：主动写收尾 meta（task 可能卡在 to_thread 同步调用，task.cancel 会延迟，
-    # 不能依赖 _run_stream_graph 的 CancelledError except，否则刷新时 done 没写 → 重连 SSE 卡 loading）
-    from app.agent.v2.nodes import _write_msg
-    await _write_msg(assistant_msg_id, meta_patch={"done": True, "cancelled": True})
-    task.cancel()
-    logger.info(f"[chat/stream] 已请求取消: thread={thread_id}")
+    # 2) 跨 worker 生效：写 DB 标志，前端 SSE 立即收到 done
+    await _write_msg(str(msg.message_id), meta_patch={"done": True, "cancelled": True})
+    logger.info(f"[chat/stream] 已写入取消标志: thread={thread_id}")
     return {"status": "cancelled", "message": "取消请求已发送"}
 
 
