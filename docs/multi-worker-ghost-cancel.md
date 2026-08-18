@@ -102,13 +102,69 @@ if not meta.get("done") and msg.created_at:
 
 改完上线,SSE done payload 变成 `{"done":true, "cancelled":false, "need_input":true}`,前端正确弹补充框。bug 根除。
 
-## 六、教训
+不过回头看,这只是**止血**:它修的是"SSE 误判孤儿"这个症状,取消机制本身还是老一套——`task.cancel()` 打进程内 task。后来我把取消整个重做了,见第七节。
+
+## 六、后记:真正的根治——协作式取消
+
+90s 时间阈值上线后又想了一层:那个 bug 的本质不是"孤儿判定写错了",而是**取消机制本身就是进程内的**。
+
+原来的取消链路:取消接口 → 查 `_tasks[thread_id]` → `task.cancel()` → CancelledError → 写 done。这条链有三个进程内依赖:
+
+1. `_tasks` 注册表——多 worker 下打不到正确进程,取消接口大概率查不到 task,直接 no-op
+2. `task.cancel()` 只对**本进程**的 task 有效
+3. 即便取消了,LLM 调用、Apify 采集这些 await 点之间的代码还是会跑完当前节点才停
+
+也就是说:用户在 worker B 的页面上点取消,图在 worker A 上跑——**根本取消不掉**。幽灵取消 bug 只是这个设计缺陷暴露出的第一个症状。
+
+### 重做:取消信号放 DB,图自己检查
+
+新方案三行就能说清:
+
+1. **取消接口只写 DB**:`meta.cancelled = True`,不再碰任何 task 对象
+2. **图节点开头自查**:每个耗时节点(query_db / call_actors / acquire_if_needed)入口调 `check_cancel(msg_id)`,读 DB 发现 `cancelled` 就 `raise CancelledByUser`,图立即停止
+3. **顶层统一收尾**:chat_stream 的 `_run_stream_graph` 捕获 `CancelledByUser`,写 `done + cancelled`,保留已产出的 sellers
+
+```python
+class CancelledByUser(Exception):
+    """协作式取消:DB 是共享取消信号,任意 worker 都能取消任意 worker 的图。"""
+
+async def check_cancel(msg_id: str) -> None:
+    if not msg_id:
+        return
+    async with async_session() as db:
+        msg = await db.get(MemoryMessage, uuid.UUID(msg_id))
+        if msg and (msg.meta or {}).get("cancelled"):
+            raise CancelledByUser()
+```
+
+取消接口简化成:查 DB 最新 assistant 消息 → 没跑完就写 `cancelled=True` → 返回。哪个 worker 接到这个请求都无所谓,因为它只是写一行数据库。
+
+`_tasks` / `_cancelled` 注册表整个删掉。SSE 那边也一样:done 由图(或取消接口)写进 DB,SSE 只是轮询转发,天然跨 worker。
+
+### 为什么这叫"协作式"
+
+`task.cancel()` 是**抢占式**——外部强杀,task 没有发言权,随时可能死在任意 await 点,资源清理靠运气。协作式(cooperative)取消是图**主动配合**:取消方只立标志,执行方在安全的检查点自己决定停下——此时 DB 连接、半成品数据都处于一致状态,想保留已产出的 sellers 就保留。
+
+代价是"检查点之间的代码不会立刻停"。所以检查点要放在耗时节点入口:query_db / call_actors(每轮采集)/ acquire_if_needed——这些是真正花时间的环节,LLM 生成、外部采集都会在下一个节点边界被拦下。对秒级的 Agent 查询,这个延迟完全可接受。
+
+### 演进复盘
+
+| 阶段 | 做法 | 问题 |
+|------|------|------|
+| v1 | `_tasks` 注册表 + `task.cancel()` | 多 worker 下查不到 task;孤儿收尾误判盖掉 need_input |
+| v2(止血) | 孤儿判定改 created_at>90s,收尾不写 cancelled | 症状消失,但取消本身仍可能 no-op |
+| v3(根治) | 取消信号进 DB,节点入口 check_cancel 协作式退出 | 无进程内状态,任意 worker 可取消任意 worker 的图 |
+
+一个通用模式浮现出来:**多 worker 架构里,"控制指令"和"执行状态"要么都进程内,要么都共享存储,不能混搭**。v1 的 bug 就是混搭——状态(task)在进程内,信号(取消请求)却可能从任何进程来。SSE/DB 写状态已经是共享的,取消信号跟进 DB 之后,整个链路才真正自洽。
+
+## 七、教训
 
 1. **凡是 `dict`/`set`/全局变量当"注册表"用的,多 worker 一定会出问题。** 这类 bug 在本地(单进程)永远复现不了,等上了生产才暴露——而且现象常常很诡异(像这次的"幽灵取消")。
 2. **跨 worker 的状态必须放共享存储**:DB、Redis,或者干脆像这次一样改成"无状态判定"(用消息自己的 created_at)。
 3. **可观测是前提。** 这次能快速定位,是因为有 trace + 能直接查 DB 的 meta。没有这些,线上 agent 是黑盒,只能瞎猜。
 4. **写"兜底逻辑"要小心它的副作用。** 孤儿收尾本意是好的(防卡死),但它写的 `cancelled` 把正常的 HITL 给盖了——兜底逻辑反而成了 bug 源。兜底动作要尽量"幂等、不覆盖业务字段"。
+5. **止血和根治要分清。** 90s 阈值修的是 SSE 误判,取消机制本身的进程内依赖还在——同类问题会在别的地方再冒出来。修完症状要追问一句:根因设计是不是也要改?
 
-## 七、一句话总结
+## 八、一句话总结
 
-> 本地单进程跑通 ≠ 生产跑通。任何依赖进程内状态的 agent 设计(注册表、内存锁、计数器),上线多 worker 前都要换成共享存储或无状态方案——否则你只是在等一个"线上才出现"的灵异 bug。
+> 本地单进程跑通 ≠ 生产跑通。任何依赖进程内状态的 agent 设计(注册表、内存锁、计数器),上线多 worker 前都要换成共享存储或无状态方案——否则你只是在等一个"线上才出现"的灵异 bug。取消这种控制流也一样:与其抢进程内的 task 句柄,不如把取消信号放进所有 worker 都看得见的地方,让执行方自己体面地退出。

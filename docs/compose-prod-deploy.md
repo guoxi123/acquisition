@@ -5,18 +5,19 @@
 ## 一、问题:全栈部署要管几样东西
 
 全栈项目上线,至少五个服务:
+
 - **postgres**:数据库
 - **redis**:缓存/队列
 - **backend**(FastAPI):API + Agent
 - **frontend**(Next.js):SSR 页面
-- **nginx**:反向代理(把 80/7788 转到 frontend/backend)
+- **nginx**:反向代理(把 80 转到 frontend/backend)
 
 要管的事:服务编排 + 依赖顺序、数据持久化(PG 数据、日志)、环境变量(生产凭证)、代码同步、启动后健康检查。
 
 ## 二、服务拓扑
 
 ```
-nginx (:7788)
+nginx (:80)
   ├── / → frontend (:3000)
   └── /api → backend (:8000)
 backend → postgres (:5432) + redis (:6379)
@@ -26,7 +27,7 @@ nginx 对外,frontend 和 backend 不直接暴露端口(内部网络通信)。�
 
 ## 三、compose 配置要点
 
-### 1. 依赖顺序(depends_on + condition)
+### 1. 依赖顺序(depends\_on + condition)
 
 backend 依赖 pg healthy + redis started:
 
@@ -63,7 +64,7 @@ backend:
 
 (这个 volume 是踩了坑才加的——详见同系列《多 Worker 下的"幽灵取消"》,trace 一度只在容器内,重建就丢。)
 
-### 3. 环境变量(env_file + environment)
+### 3. 环境变量(env\_file + environment)
 
 敏感凭证(数据库密码、API key)放 `.env.prod`,compose 用 `env_file` 注入;非敏感的运行时配置(DB 指向容器服务名)写死在 `environment`:
 
@@ -85,7 +86,7 @@ backend:
 ```yaml
 nginx:
   ports:
-    - "7788:80"   # 宿主机 7788 → 容器 80
+    - "80:80"   # 宿主机 80 → 容器 80
 ```
 
 frontend/backend 不映射端口(不暴露)。
@@ -104,7 +105,7 @@ ALIYUN_SMS_SIGN_NAME=xxx
 ...
 ```
 
-compose 读 `.env.prod`(env_file) + `environment` 里的变量,一起注入容器。部署时本地 `.env.prod` scp 到服务器。
+compose 读 `.env.prod`(env\_file) + `environment` 里的变量,一起注入容器。部署时本地 `.env.prod` scp 到服务器。
 
 ## 五、deploy.sh:一键部署脚本
 
@@ -123,15 +124,16 @@ ssh root@server "cd /opt/acquisition && cp .env.prod .env && docker compose -f d
 
 # 4. 健康检查(等启动 + curl health + 登录测试)
 ssh root@server "
-  curl -s http://localhost:7788/health | grep -q ok || (echo '后端未响应'; docker compose logs backend; exit 1)
+  curl -s http://localhost:80/health | grep -q ok || (echo '后端未响应'; docker compose logs backend; exit 1)
 "
 ```
 
 几个细节:
+
 - `--exclude='logs'`:不把本地日志传上去(日志是运行时产物)
 - tar+ssh:服务器没 rsync 也能用
 - 健康检查跑后端日志 tail 帮助排错
-- 端口改了(7788)记得脚本里的 health URL 也改
+- 端口改了(80)记得脚本里的 health URL 也改
 
 ## 六、踩过的坑
 
@@ -150,3 +152,4 @@ ssh root@server "
 - **部署**:tar+ssh 同步 + docker compose up --build + 健康检查脚本
 
 > 单机部署不丢人。一台 ECS + 一个 docker-compose.prod.yml + 一个 deploy.sh,对小到中等规模的全栈项目,比上 K8s 务实得多。把"服务编排、持久化、环境隔离、部署脚本"这四样做扎实,单机也稳。
+
