@@ -161,10 +161,24 @@ async def query_db(state: V2State) -> dict:
             await update_progress(msg_id, "query_db", "条件不足或无额度，0 个可复用", "done")
         return {"sellers": []}
 
-    q = select(Seller).where(
-        Seller.marketplace == marketplace,
-        func.lower(Seller.category).like(f"%{category}%"),
-    )
+    # 品类语义检索：embedding 成功 → 向量余弦排序；失败 → 降级原 LIKE 匹配（主流程不因外部 API 中断）
+    emb = None
+    try:
+        from app.core.embedding import embed_texts, seller_query_text
+
+        emb = (await embed_texts([seller_query_text(category, marketplace)]))[0]
+    except Exception as e:
+        logger.warning(f"[query_db] embedding 失败，降级 LIKE 匹配: {e}")
+
+    q = select(Seller).where(Seller.marketplace == marketplace)
+    if emb is not None:
+        q = q.where(Seller.embedding.isnot(None)).order_by(
+            Seller.embedding.cosine_distance(emb)
+        )
+    else:
+        q = q.where(func.lower(Seller.category).like(f"%{category}%")).order_by(
+            Seller.total_feedback.desc().nullslast()
+        )
     if business_country:
         q = q.where(Seller.business_country == business_country)
     if min_total_feedback:
@@ -180,7 +194,7 @@ async def query_db(state: V2State) -> dict:
                 )
             )
         )
-    q = q.order_by(Seller.total_feedback.desc().nullslast()).limit(target)
+    q = q.limit(target)
 
     async with async_session() as db:
         sellers_db = list((await db.execute(q)).scalars().all())
@@ -301,6 +315,44 @@ async def call_actors(state: V2State) -> dict:
             s["business_country"] = parse_country(s["addr_str"])
 
     # upsert：只对差集（新卖家）插入，已入库的不覆盖；products 按 asin 去重写全量
+    # embedding 同步生成（批量一次，几百 ms）；失败仅 log 不阻断采集，行留 NULL 由回填脚本兜底
+    from app.core.embedding import embed_texts
+
+    seller_embs: dict[str, list[float]] = {}
+    product_embs: dict[str, list[float]] = {}
+    try:
+        # 文本形态与 app.core.embedding.seller_text / product_text 保持一致
+        emb_inputs = [
+            " | ".join(
+                p
+                for p in [
+                    ((s.get("detail") or {}).get("name"))
+                    or (s.get("junglee_seller") or {}).get("name"),
+                    category,
+                    (s.get("detail") or {}).get("businessName"),
+                ]
+                if p
+            )
+            for s in to_enrich
+        ]
+        if emb_inputs:
+            for s, e in zip(to_enrich, await embed_texts(emb_inputs)):
+                seller_embs[s["seller_id"]] = e
+        prod_rows = [p_ for p_ in products_raw if p_.get("asin")]
+        prod_inputs = [
+            " | ".join(
+                p
+                for p in [p_.get("title"), p_.get("brand"), p_.get("bread_crumbs")]
+                if p
+            )
+            for p_ in prod_rows
+        ]
+        if prod_inputs:
+            for p_, e in zip(prod_rows, await embed_texts(prod_inputs)):
+                product_embs[p_["asin"]] = e
+    except Exception as e:
+        logger.warning(f"[call_actors] embedding 生成失败（留 NULL 待回填）: {e}")
+
     async with async_session() as db:
         for s in to_enrich:
             sid = s["seller_id"]
@@ -321,6 +373,7 @@ async def call_actors(state: V2State) -> dict:
                     member_since=detail.get("memberSince"),
                     response_time=detail.get("responseTime"),
                     marketplace=marketplace,
+                    embedding=seller_embs.get(sid),
                 )
                 .on_conflict_do_update(
                     index_elements=[Seller.seller_id],
@@ -357,6 +410,7 @@ async def call_actors(state: V2State) -> dict:
                     seller_id=ps.get("id"),
                     marketplace=marketplace,
                     category=category,
+                    embedding=product_embs.get(asin),
                 )
                 .on_conflict_do_update(
                     index_elements=[Product.asin],

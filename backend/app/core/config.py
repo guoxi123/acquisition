@@ -18,6 +18,12 @@ class Settings(BaseSettings):
     llm_base_url: str = "https://api.deepseek.com/v1"
     llm_model: str = "deepseek-chat"
 
+    # Embedding（OpenAI 兼容 /embeddings，默认硅基流动 bge-m3；DeepSeek 无 embedding 端点故独立配置）
+    embedding_api_key: str = ""
+    embedding_base_url: str = "https://api.siliconflow.cn/v1"
+    embedding_model: str = "BAAI/bge-m3"
+    embedding_dim: int = 1024
+
     # 应用
     app_env: str = "development"
     cors_origins: str = "http://localhost:3000"

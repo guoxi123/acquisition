@@ -20,6 +20,10 @@ from app.models.user_acquired_seller import UserAcquiredSeller
 # async_session 从 db_mod 动态取（conftest 替换 engine 后指向测试 loop 的 sessionmaker）
 async_session = lambda: db_mod.async_session()
 
+# AGT_ 种子的固定向量：只有首位分量，query_db mock 的查询向量与之间距只取决于该分量，
+# 使种子卖家在余弦排序中恒排在真实库存（其他方向的向量）之前
+_AGT_EMB = [1.0] + [0.0] * 1023
+
 pytestmark = pytest.mark.asyncio
 
 
@@ -27,7 +31,11 @@ async def _seed_sellers(ids, marketplace="amazon.com", category="outdoor furnitu
     async with async_session() as db:
         for sid, fb in ids:
             await db.execute(
-                pg_insert(Seller).values(seller_id=sid, marketplace=marketplace, category=category, total_feedback=fb)
+                pg_insert(Seller).values(
+                    seller_id=sid, marketplace=marketplace, category=category, total_feedback=fb,
+                    # 语义检索下的确定性：种子带固定向量（AGT_ 间相同方向），与真实库存隔离
+                    embedding=_AGT_EMB,
+                )
                 .on_conflict_do_nothing(index_elements=[Seller.seller_id])
             )
         await db.commit()
@@ -62,14 +70,19 @@ async def agent_user():
         await db.commit()
 
 
-async def test_query_db_dedup_and_category(agent_user):
-    """query_db：去重已获取 + 品类模糊匹配（大小写归一）"""
+async def test_query_db_dedup_and_category(agent_user, monkeypatch):
+    """query_db：去重已获取 + 语义排序召回种子（mock embedding 隔离真实库存）"""
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(
+        "app.core.embedding.embed_texts", AsyncMock(return_value=[_AGT_EMB])
+    )
     uid = agent_user
     await _seed_sellers([(f"AGT_S{i}", 1000 - i) for i in range(10)], category="Outdoor Furniture")
     await _acquire(uid, ["AGT_S0", "AGT_S1"])
     res = await nodes.query_db({
         "marketplace": "amazon.com", "category": "outdoor furniture",
-        "remaining": 10, "user_id": str(uid), "assistant_msg_id": None,
+        "remaining": 8, "user_id": str(uid), "assistant_msg_id": None,
     })
     ids = [s["seller_id"] for s in res["sellers"]]
     assert "AGT_S0" not in ids and "AGT_S1" not in ids

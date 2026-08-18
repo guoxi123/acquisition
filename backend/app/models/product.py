@@ -1,5 +1,6 @@
 from datetime import datetime
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -31,3 +32,5 @@ class Product(Base):
     fetched_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
     )
+    # RAG 语义检索向量（title/brand/bread_crumbs 的 bge-m3 embedding）
+    embedding: Mapped[list | None] = mapped_column(Vector(1024), nullable=True)

@@ -106,5 +106,34 @@ async def filter_my_sellers(
     return [_seller_to_dict(s, seller_score=score) for s, score in rows]
 
 
+@tool
+async def semantic_search_sellers(user_id: str, query: str, limit: int = 10) -> list:
+    """在当前用户已获取的卖家中做语义搜索（向量相似度召回）。
+    用户用模糊或自然语言描述品类时调用，如"做高端厨具的卖家"、"宠物智能用品相关的卖家"；
+    精确条件（国家/评分/品类关键词）优先用 filter_my_sellers。
+    参数 user_id 由系统从登录态注入，不要向用户询问。
+    """
+    from app.core.embedding import embed_texts
+
+    try:
+        emb = (await embed_texts([query]))[0]
+    except Exception as e:
+        return [{"error": f"语义搜索暂不可用：{e}，请改用 filter_my_sellers"}]
+    async with async_session() as db:
+        rows = (
+            await db.execute(
+                select(Seller, UserAcquiredSeller.seller_score)
+                .join(UserAcquiredSeller, UserAcquiredSeller.seller_id == Seller.seller_id)
+                .where(
+                    UserAcquiredSeller.user_id == uuid.UUID(user_id),
+                    Seller.embedding.isnot(None),
+                )
+                .order_by(Seller.embedding.cosine_distance(emb))
+                .limit(limit)
+            )
+        ).all()
+    return [_seller_to_dict(s, seller_score=score) for s, score in rows]
+
+
 # 工具注册表：query_agent 用这里的全部工具。新功能追加进来即可。
-ALL_TOOLS = [get_my_sellers, filter_my_sellers]
+ALL_TOOLS = [get_my_sellers, filter_my_sellers, semantic_search_sellers]
