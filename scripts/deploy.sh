@@ -12,6 +12,17 @@ echo "════════════════════════�
 echo "  部署到 ${SERVER_USER}@${SERVER_HOST}:${SERVER_PATH}"
 echo "═══════════════════════════════════════════════════"
 
+# 0. 部署前测试门槛：后端全量 pytest + 前端 tsc，任一失败立即中止
+echo "=== 0/4 部署前测试 ==="
+echo "→ 后端 pytest（全量，含 integration）"
+cd "${PROJECT_DIR}/backend"
+.venv/bin/python -m pytest tests/ -q
+echo "→ 前端类型检查 tsc"
+cd "${PROJECT_DIR}/frontend"
+pnpm exec tsc --noEmit
+cd "${PROJECT_DIR}"
+echo "✅ 测试全部通过"
+
 # 1. 同步代码（排除本地开发文件，用 tar+ssh 避免远程无 rsync 的问题）
 echo "=== 1/4 同步代码到服务器 ==="
 cd "${PROJECT_DIR}"

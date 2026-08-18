@@ -39,7 +39,13 @@ description: 用户要求提交代码（"提交"/"commit"/"git commit"）时，�
 - **body**：分点列改动（中文），说清"改了什么、为什么"，基于 diff 不编造。
 - 标识符/路径/命令保持英文。
 
-## 4. 提交
+## 4. 提交前测试门槛（强制）
+- **改动含后端 Python 文件**（`backend/app/`）时，提交前**必须**跑 `cd backend && .venv/bin/python -m pytest tests/ -v`。
+- **pytest 全量通过才能提交**。失败 → 报告失败项 → 修代码/修测试 → 再跑 → 通过后才提交。
+- 改动只涉及前端 / 文档 / 配置（非 Python 逻辑）时，跑 `cd frontend && pnpm exec tsc --noEmit` 即可跳过 pytest。
+- 纯文案 / 注释 / CSS 类名改动可跳过测试。
+
+## 5. 提交
 - 先把生成的完整 message 展示给用户确认。
 - 确认后用 `git commit` 提交（多行 message 用多个 `-m` 或 heredoc，确保 body 保留换行）。
 - **不主动 `git push`**，除非用户明确要求。
