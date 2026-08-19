@@ -22,17 +22,31 @@ async def _cleanup():
     async with db_mod.async_session() as db:
         from sqlalchemy import select, delete as sa_delete
         from app.memory.models import MemorySession
+        from app.models.sms_code import SmsCode
         # 找到测试用户 ID
         uids = [r[0] for r in (await db.execute(select(User.id).where(User.phone == TEST_PHONE))).all()]
         if uids:
             await db.execute(sa_delete(MemorySession).where(MemorySession.user_id.in_(uids)))
             await db.execute(delete(User).where(User.id.in_(uids)))
+        # 清验证码，避免残留记录触发 60s 防刷（上次跑测试的记录会挡住本次发码）
+        await db.execute(sa_delete(SmsCode).where(SmsCode.phone == TEST_PHONE))
         await db.commit()
 
 
 @pytest.fixture
-async def clean_db():
-    """每个测试前后清理测试用户（避免重复注册冲突）"""
+async def clean_db(monkeypatch):
+    """每个测试前后清理测试用户（避免重复注册冲突）+ mock 掉真实短信发送。
+
+    本地 .env 可能配了真阿里云凭证——不 mock 会真发短信、耗配额，
+    且被阿里云频控（biz.FREQUENCY）挡住导致测试不稳定。
+    """
+    from app.auth import api as auth_api
+
+    async def _fake_send(phone: str, code: str) -> dict:
+        return {"ok": True, "mock": True, "code": code}
+
+    # auth/api.py 用 from-import，需 patch 它模块内的引用
+    monkeypatch.setattr(auth_api, "send_sms_code", _fake_send)
     await _cleanup()
     yield
     await _cleanup()

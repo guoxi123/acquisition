@@ -16,7 +16,8 @@ echo "════════════════════════�
 echo "=== 0/4 部署前测试 ==="
 echo "→ 后端 pytest（全量，含 integration）"
 cd "${PROJECT_DIR}/backend"
-.venv/bin/python -m pytest tests/ -q
+# 排除 agent_eval：跑真实 LLM，受外部 API 波动影响，部署门槛不应被它卡住
+.venv/bin/python -m pytest tests/ -q --ignore=tests/agent_eval
 echo "→ 前端类型检查 tsc"
 cd "${PROJECT_DIR}/frontend"
 pnpm exec tsc --noEmit
