@@ -144,7 +144,7 @@ else:
 
 ### 3.3 query\_agent 加语义搜索工具
 
-skills.py 的工具注册表模式（见 `docs/skill-tool-registry.md`）在这里发挥作用：**加一个** **`@tool`** **函数 + 注册，ReAct agent 自动可用**，不动图、不动 Router：
+skills.py 的工具注册表模式（见 `skill-tool-registry.md`）在这里发挥作用：**加一个** **`@tool`** **函数 + 注册，ReAct agent 自动可用**，不动图、不动 Router：
 
 ```python
 # app/agent/skills.py
@@ -206,7 +206,7 @@ cd backend && .venv/bin/python scripts/backfill_embeddings.py --table sellers
 
 单文件 `app/core/embedding.py`，三个值得记录的决策：
 
-**用 httpx 直调，不引 openai SDK / langchain embedding 抽象。** 项目已有 `with_retry`（`docs/error-retry-classification.md`）的瞬时/永久分类体系，httpx 的 `HTTPStatusError` 天然兼容；openai SDK 为了一个端点引入太重，langchain 的 Embeddings 抽象绑定了它的重试体系，和项目自己的 retry 缝不起来。
+**用 httpx 直调，不引 openai SDK / langchain embedding 抽象。** 项目已有 `with_retry`（`error-retry-classification.md`）的瞬时/永久分类体系，httpx 的 `HTTPStatusError` 天然兼容；openai SDK 为了一个端点引入太重，langchain 的 Embeddings 抽象绑定了它的重试体系，和项目自己的 retry 缝不起来。
 
 **状态码手动映射进重试分类。** `with_retry` 的 classify 只认异常对象，所以 4xx/5xx 响应要手动转成对应异常：
 
@@ -223,7 +223,7 @@ if resp.status_code >= 400:
 
 ## 六、测试：三层各自测什么
 
-遵循项目的 unit / integration 分层（`docs/testing-and-eval.md`），新增三个测试文件：
+遵循项目的 unit / integration 分层（`testing-and-eval.md`），新增三个测试文件：
 
 **`tests/unit/test_embedding.py`（8 用例，mock httpx，不连网）**
 
@@ -288,19 +288,3 @@ docker exec acquisition-pg psql -U acquisition -d acquisition \
 - **召回质量没有量化评估**：语义检索的效果（改了之后库存复用率提升了多少）目前只能看日志观测。如果后续要量化，可以仿 `tests/agent_eval/` 的模式做一组「查询词 → 期望命中卖家」的 golden set，用真实 embedding 跑召回率。
 
 ***
-
-**改动文件清单**：
-
-| 文件                                                                                                                       | 改动                                                                                                      |
-| ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------- |
-| `backend/app/core/config.py`                                                                                             | +4 个 embedding 配置项                                                                                      |
-| `backend/app/core/embedding.py`                                                                                          | 新建：embed\_texts（httpx + with\_retry + 分批 + index 对齐）、seller\_text / product\_text / seller\_query\_text |
-| `backend/app/models/seller.py` / `product.py`                                                                            | +embedding `Vector(1024)` 列                                                                             |
-| `backend/alembic/versions/c5d6e7f8a9b0_add_embedding_columns.py`                                                         | 扩展 + 列 + HNSW 索引                                                                                        |
-| `backend/app/agent/v2/nodes.py`                                                                                          | query\_db 语义排序（降级 LIKE）；call\_actors 落库同步生成 embedding                                                   |
-| `backend/app/agent/skills.py`                                                                                            | +semantic\_search\_sellers 工具，注册进 ALL\_TOOLS                                                            |
-| `backend/scripts/backfill_embeddings.py`                                                                                 | 新建：存量回填（幂等 + 零向量占位）                                                                                     |
-| `docker-compose.yml` / `docker-compose.prod.yml`                                                                         | postgres:16-alpine → pgvector/pgvector:pg16                                                             |
-| `backend/requirements.txt`                                                                                               | +pgvector                                                                                               |
-| `backend/tests/unit/test_embedding.py` / `test_query_db_semantic.py`、`backend/tests/integration/test_semantic_search.py` | 新建测试                                                                                                    |
-

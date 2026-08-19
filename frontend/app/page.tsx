@@ -77,6 +77,12 @@ export default function HomePage() {
             </span>
           </div>
           <div className="flex items-center gap-3">
+            <a
+              href="/wiki/"
+              className="rounded-lg border border-white/10 px-4 py-2 text-sm text-zinc-300 transition hover:bg-white/5"
+            >
+              文档
+            </a>
             <Link
               href="/login"
               className="rounded-lg border border-white/10 px-4 py-2 text-sm text-zinc-300 transition hover:bg-white/5"
@@ -313,6 +319,9 @@ export default function HomePage() {
             <Link href="/chat" className="transition hover:text-zinc-300">
               工作台
             </Link>
+            <a href="/wiki/" className="transition hover:text-zinc-300">
+              技术文档
+            </a>
           </div>
         </div>
       </footer>

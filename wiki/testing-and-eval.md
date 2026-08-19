@@ -23,7 +23,7 @@
 
 第二个难点：**agent 的"正确"不只看单点，还看链路**。意图识别对了但配额判断漏了、采集入库了但联系方式没查、LLM 返回了卖家但没落库 `user_acquired_sellers`——每个环节单独对，拼起来照样错。这要求有贯通全流程的集成测试。
 
-第三个难点：**性能/环境类的 bug 单测测不出来**。多 worker 下取消失效、JSONB 原地修改不生效、pytest event loop 绑定——这些都是本项目实际踩过的坑（见 `docs/multi-worker-ghost-cancel.md`、`docs/pg-data-sync-pitfalls.md`），只能靠针对性测试或线上观测兜住。
+第三个难点：**性能/环境类的 bug 单测测不出来**。多 worker 下取消失效、JSONB 原地修改不生效、pytest event loop 绑定——这些都是本项目实际踩过的坑（见 `multi-worker-ghost-cancel.md`、`pg-data-sync-pitfalls.md`），只能靠针对性测试或线上观测兜住。
 
 ***
 
@@ -162,7 +162,7 @@ asyncio_default_test_loop_scope = session
 
 ## 五、第 3 层：Agent 评估（本体系的核心增量）
 
-详细方法论见 `docs/agent-eval.md`，这里讲落地形态。
+详细方法论见 `agent-eval.md`，这里讲落地形态。
 
 ### 1. 意图分类评估（test\_classify.py）
 

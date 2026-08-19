@@ -20,6 +20,9 @@ cd "${PROJECT_DIR}/backend"
 echo "→ 前端类型检查 tsc"
 cd "${PROJECT_DIR}/frontend"
 pnpm exec tsc --noEmit
+echo "→ 文档站构建 VitePress"
+cd "${PROJECT_DIR}/wiki"
+pnpm build
 cd "${PROJECT_DIR}"
 echo "✅ 测试全部通过"
 
@@ -38,6 +41,7 @@ COPYFILE_DISABLE=1 tar czf - \
   --exclude='._*' \
   --exclude='logs' \
   --exclude='*.log' \
+  --exclude='wiki/node_modules' \
   . \
   | ssh -i ${SSH_KEY} "${SERVER_USER}@${SERVER_HOST}" "
     mkdir -p ${SERVER_PATH}

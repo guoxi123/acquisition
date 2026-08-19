@@ -108,7 +108,7 @@ acquisition/
 │   ├── app/                      页面（首页 / login / register / chat）
 │   ├── components/               React 组件（SellerTable 分页表格）
 │   └── lib/api.ts                API 客户端（auth + streamChat + connectStream SSE + sessions）
-├── docs/                         技术文档（踩坑三部曲 + 架构 + 运维 + 记忆 + 前端 + 集成）
+├── wiki/                         技术文档站（VitePress：31 篇 md + .vitepress/config.mts，构建产物 wiki-dist/ 由 nginx 挂载）
 ├── scripts/                      deploy.sh（tar+ssh 一键部署）+ start.sh（本地启动）
 ├── nginx/                        Nginx 反代配置
 ├── docker-compose.prod.yml       生产编排（pg / redis / backend / frontend / nginx）
