@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/guoxi/Documents/agent\\ 项目实战/acquisition/.claude/hooks/lint-on-edit.sh"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/guoxi/Documents/agent\\ 项目实战/acquisition/.claude/hooks/guard-commit.sh"
+          }
+        ]
+      }
+    ]
+  }
+}

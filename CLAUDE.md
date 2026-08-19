@@ -1,4 +1,4 @@
-# CLAUDE.md（项目级 — ai-learning）
+# CLAUDE.md（项目级）
 
 > 本文件是项目专属指引，叠加在全局 `~/.claude/CLAUDE.md` 之上；二者冲突时以项目为准。
 > 第一部分的行为准则参照 Andrej Karpathy 对 LLM 编码通病的观察，整体偏向「谨慎优先」；
